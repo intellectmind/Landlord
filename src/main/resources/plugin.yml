@@ -1,0 +1,30 @@
+name: Landlord
+version: 1.0.0
+description: 适用于Folia和Paper等核心的斗地主插件，可对接Vault经济支持
+main: cn.kurt6.landlord.Landlord
+api-version: 1.21
+author: Kurt
+folia-supported: true
+
+commands:
+  landlord:
+    description: 斗地主游戏主命令
+    usage: /<command> [create|join|leave|ready|list]
+    aliases: [ddz, 斗地主]
+    permission: landlord.use
+  landlord_action:
+    description: 斗地主游戏按钮操作命令
+    usage: /<command> <action>
+    permission: landlord.use
+  landlord_card:
+    description: 斗地主选牌命令
+    usage: /<command> <card_index>
+    permission: landlord.use
+
+permissions:
+  landlord.use:
+    description: 允许使用斗地主游戏
+    default: true
+  landlord.admin:
+    description: 斗地主管理员权限
+    default: op
