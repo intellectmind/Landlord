@@ -27,6 +27,7 @@ turn-timeout: 60  # 出牌超时时间(秒)
 scoreboard-enabled: true  # 是否启用计分板
 bounty-enabled: true  # 是否启用金币赛
 money-multiplier: 10  # 金币赛基础金额倍数
+```
 
 ### bStats
 ![bStats](https://bstats.org/signatures/bukkit/Landlord-Kurt.svg)
