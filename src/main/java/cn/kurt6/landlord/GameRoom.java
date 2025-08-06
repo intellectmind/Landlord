@@ -39,6 +39,7 @@ public class GameRoom {
     private int biddingIndex = 0; // 当前叫分玩家索引
     private boolean biddingPhaseComplete = false; // 叫分阶段是否完成
 
+    private BossBar scoreboardBossBar; // 用于显示计分板信息的BossBar
     private BossBar bossBar;
     private boolean gameStarted = false;
     private GameState gameState = GameState.WAITING;
@@ -90,6 +91,7 @@ public class GameRoom {
         this.plugin = plugin;
         this.bossBar = Bukkit.createBossBar("房间 " + roomId + " - 等待玩家加入",
                 BarColor.BLUE, BarStyle.SOLID);
+        this.scoreboardBossBar = Bukkit.createBossBar("", BarColor.PURPLE, BarStyle.SOLID);
         this.cardSelectionGUI = new CardSelectionGUI(plugin, this);
     }
 
@@ -110,6 +112,7 @@ public class GameRoom {
         selectedCards.put(player.getUniqueId(), new ArrayList<>());
         bidStatus.put(player.getUniqueId(), 0);
         bossBar.addPlayer(player);
+        scoreboardBossBar.addPlayer(player);
 
         updateBossBar();
         updateScoreboard();
@@ -123,8 +126,15 @@ public class GameRoom {
     }
 
     public void removePlayer(Player player) {
+        // 游戏开始后禁止离开房间
+        if (gameStarted) {
+            player.sendMessage(ChatColor.RED + "游戏进行中，无法离开房间！");
+            return;
+        }
+
         lastHandMessages.remove(player.getUniqueId());
         bossBar.removePlayer(player);
+        scoreboardBossBar.removePlayer(player);
 
         // 清理玩家的记分板
         try {
@@ -136,7 +146,7 @@ public class GameRoom {
                 }
             }
         } catch (Exception e) {
-            plugin.getLogger().warning("重置计分板时出现错误: " + e.getMessage());
+
         }
 
         if (gameStarted) {
@@ -453,11 +463,15 @@ public class GameRoom {
         else if (command.equals("3分")) bidScore = 3;
         else if (command.equals("不叫")) bidScore = 0;
 
+        // 严格验证叫分
         if (bidScore > 0) {
             if (bidScore <= currentBidScore) {
                 player.sendMessage(ChatColor.RED + "叫分必须比当前最高分(" + currentBidScore + "分)更高！");
-                cardSelectionGUI.openBiddingGUI(player); // 重新打开GUI
-                startTurnTimer(player);
+                // 重新打开叫分GUI
+                runTaskLater(() -> {
+                    cardSelectionGUI.openBiddingGUI(player);
+                    startBiddingTimer(player);
+                }, 2L);
                 return;
             }
             currentBidScore = bidScore;
@@ -570,6 +584,7 @@ public class GameRoom {
 
             // 关闭当前打开的GUI
             player.closeInventory();
+            forceCloseAllGUIs();
 
             // 处理自动不叫
             handleBiddingCommand(player, "不叫");
@@ -590,7 +605,16 @@ public class GameRoom {
         broadcastToRoom(ChatColor.GOLD + player.getName() + " 成为地主！叫分: " + bidScore + " 分");
         showLandlordCards();
 
-        startTurnTimer(currentPlayer);
+        // 强制关闭所有GUI
+        player.closeInventory();
+        forceCloseAllGUIs();
+
+        // 延迟启动出牌阶段，确保GUI完全关闭
+        runTaskLater(() -> {
+            startTurnTimer(currentPlayer);
+            // 显示地主的手牌
+            showPlayerCards(landlord, true);
+        }, 2L);
     }
 
     private void showLandlordCardsPreview() {
@@ -679,7 +703,6 @@ public class GameRoom {
             multiplier *= 4;
             showBombEffect(player, 4);
             // 王炸特殊处理
-            lastPlayedCards.clear();  // 清空上家出牌
             passCount = 0;           // 重置过牌计数
         }
 
@@ -764,8 +787,12 @@ public class GameRoom {
         passCount++;
         broadcastToRoom(ChatColor.GRAY + player.getName() + " 选择过牌");
 
-        if (passCount >= 2) {
-            // 两人过牌，重新开始
+        // 检查上家是否出的是王炸
+        boolean lastWasRocket = !lastPlayedCards.isEmpty() &&
+                GameLogic.recognizePattern(lastPlayedCards).getType() == GameLogic.CardType.ROCKET;
+
+        if (passCount >= 2 || lastWasRocket) {
+            // 两人过牌或上家出王炸，重新开始
             lastPlayedCards.clear();
             currentPlayer = lastPlayer;
             passCount = 0;
@@ -802,9 +829,6 @@ public class GameRoom {
             return;
         }
         cancelCurrentTimer();
-
-        // 强制关闭所有非当前玩家的GUI
-        forceCloseAllGUIs();
 
         List<Player> playerList = new ArrayList<>(players.values());
         int nextIndex = (playerList.indexOf(currentPlayer) + 1) % playerList.size();
@@ -897,15 +921,7 @@ public class GameRoom {
 
             // 关闭当前打开的GUI
             player.closeInventory();
-
-            // 发送取消托管按钮
-            TextComponent mes = new TextComponent(ChatColor.RED + "可输入/landlord_action auto 退出托管");
-            TextComponent cancelButton = new TextComponent(ChatColor.RED + "【点击取消托管】");
-            cancelButton.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/landlord_action auto"));
-            cancelButton.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                    new ComponentBuilder("点击取消托管").create()));
-
-            player.spigot().sendMessage(mes, cancelButton);
+            forceCloseAllGUIs();
 
             // 处理自动出牌
             if (gameState == GameState.BIDDING) {
@@ -1183,6 +1199,11 @@ public class GameRoom {
             return;
         }
 
+        // 如果是托管玩家，直接返回不显示手牌
+        if (isAutoPlay(player)) {
+            return;
+        }
+
         // 如果不是当前玩家且允许选择，直接返回
         if (allowSelection && !player.equals(currentPlayer)) {
             return;
@@ -1198,7 +1219,7 @@ public class GameRoom {
         if (allowSelection && player.equals(currentPlayer)) {
             cardSelectionGUI.openGUI(player, cards);
         } else {
-            // 非当前玩家仍然显示手牌信息
+            // 非当前玩家仍然显示手牌信息（仅限非托管玩家）
             ComponentBuilder builder = new ComponentBuilder("你的手牌:")
                     .color(net.md_5.bungee.api.ChatColor.GREEN);
             for (Card card : cards) {
@@ -1238,6 +1259,7 @@ public class GameRoom {
 
     private void sendGameButtons(Player player) {
         player.sendMessage(ChatColor.AQUA + "=== 游戏操作 ===");
+        player.sendMessage(ChatColor.GREEN + "输入/ddz ready 准备/取消准备");
 
         // 创建可点击的「准备/取消准备」按钮
         TextComponent readyButton = new TextComponent("【准备/取消准备】");
@@ -1249,7 +1271,6 @@ public class GameRoom {
 
         // 发送按钮消息
         player.spigot().sendMessage(readyButton);
-        player.sendMessage(ChatColor.WHITE + "或者输入 /ddz ready - 准备/取消准备");
     }
 
     private void updateBossBar() {
@@ -1308,10 +1329,10 @@ public class GameRoom {
         // 如果游戏已结束，不更新计分板
         if (gameState == GameState.FINISHED) return;
 
-        // 如果计分板被禁用，直接发送聊天消息
+        // 如果计分板被禁用，显示bossbar
         if (!plugin.isScoreboardEnabled()) {
             for (Player player : players.values()) {
-                sendScoreboardInfo(player);
+                updateScoreboardBossBar(player);
             }
             return;
         }
@@ -1393,7 +1414,7 @@ public class GameRoom {
                     // 最后设置记分板
                     player.setScoreboard(scoreboard);
                 } catch (Exception e) {
-                    sendScoreboardInfo(player); // 回退到聊天消息
+                    updateScoreboardBossBar(player); // 回退到bossbar
                 }
             }, null);
         } catch (Exception e) {
@@ -1402,48 +1423,38 @@ public class GameRoom {
     }
 
     /**
-     * 当计分板不可用时，通过聊天消息发送游戏信息
+     * 当计分板不可用时，通过新bossbar显示游戏信息
      */
-    private void sendScoreboardInfo(Player player) {
-        // 如果游戏已结束且已经发送过消息，则不再发送
+    private void updateScoreboardBossBar(Player player) {
         if (gameState == GameState.FINISHED && lastHandMessages.containsKey(player.getUniqueId())) {
             return;
         }
 
-        player.sendMessage(ChatColor.GOLD + "=== 游戏状态 ===");
-        player.sendMessage(ChatColor.YELLOW + "房间: " + roomId);
+        if (scoreboardBossBar == null) return;
+
+        StringBuilder info = new StringBuilder();
 
         if (gameStarted) {
-            if (gameState == GameState.BIDDING) {
-                player.sendMessage(ChatColor.GOLD + "叫分阶段 - 最高分: " + currentBidScore);
-            }
-
-            if (landlord != null) {
-                player.sendMessage(ChatColor.RED + "地主: " + landlord.getName());
-                player.sendMessage(ChatColor.AQUA + "倍数: x" + multiplier);
-            }
-
-            if (currentPlayer != null) {
-                player.sendMessage(ChatColor.WHITE + "当前玩家: " + ChatColor.GREEN + currentPlayer.getName());
-            }
-
-            player.sendMessage(ChatColor.AQUA + "手牌数量:");
+            info.append(ChatColor.AQUA).append("手牌数量: ");
             for (Player p : players.values()) {
                 List<Card> cards = playerCards.get(p.getUniqueId());
                 int cardCount = cards != null ? cards.size() : 0;
                 String name = p.equals(player) ? "你" : p.getName();
-                player.sendMessage("  " + name + ": " + cardCount);
+                info.append(name).append(":").append(cardCount).append(" ");
             }
         } else {
-            player.sendMessage(ChatColor.WHITE + "玩家列表:");
+            info.append(ChatColor.WHITE).append("玩家状态: ");
             for (Player p : players.values()) {
                 boolean ready = readyStatus.get(p.getUniqueId());
-                String status = ready ? ChatColor.GREEN + "✓ 已准备" : ChatColor.RED + "✗ 未准备";
+                String status = ready ? ChatColor.GREEN + "✓" : ChatColor.RED + "✗";
                 String name = p.equals(player) ? "你" : p.getName();
-                player.sendMessage("  " + status + " " + name);
+                info.append(status).append(name).append(" ");
             }
         }
-        player.sendMessage(ChatColor.GOLD + "================");
+
+        scoreboardBossBar.setTitle(info.toString());
+        scoreboardBossBar.setProgress(1.0);
+
     }
 
     private void broadcastToRoom(String message) {
@@ -1459,6 +1470,9 @@ public class GameRoom {
         playerTimers.clear();
         if (bossBar != null) {
             bossBar.removeAll();
+        }
+        if (scoreboardBossBar != null) {
+            scoreboardBossBar.removeAll();
         }
 
         // 同步清理计分板

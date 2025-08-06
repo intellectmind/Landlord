@@ -441,32 +441,46 @@ public class GameLogic {
         List<List<Card>> beatingPlays = new ArrayList<>();
         Set<String> addedPlays = new HashSet<>();
 
-        // 王炸总是可以出（如果有）
-        List<Card> rockets = hand.stream()
-                .filter(card -> card.getValue() == 16 || card.getValue() == 17)
-                .collect(Collectors.toList());
-        if (rockets.size() == 2 && target.getType() != CardType.ROCKET) {
-            beatingPlays.add(rockets);
+        // 1. 特殊牌型处理：王炸和炸弹
+        if (target.getType() != CardType.ROCKET) {
+            // 检查是否有王炸
+            List<Card> rockets = hand.stream()
+                    .filter(card -> card.getValue() == 16 || card.getValue() == 17)
+                    .collect(Collectors.toList());
+            if (rockets.size() == 2) {
+                beatingPlays.add(rockets);
+                return beatingPlays; // 王炸可以直接出，不需要其他选择
+            }
         }
 
-        // 如果目标不是炸弹，炸弹可以压过
+        // 2. 炸弹处理
         if (target.getType() != CardType.BOMB && target.getType() != CardType.ROCKET) {
+            // 只有目标不是炸弹时才能用炸弹压
             Map<Integer, List<Card>> valueGroups = hand.stream()
-                    .filter(card -> card.getValue() >= 3 && card.getValue() <= 15)
+                    .filter(card -> card.getValue() >= 3 && card.getValue() <= 15) // 炸弹不能是王牌
                     .collect(Collectors.groupingBy(Card::getValue));
 
-            for (List<Card> group : valueGroups.values()) {
-                if (group.size() == 4) {
-                    beatingPlays.add(new ArrayList<>(group));
+            for (Map.Entry<Integer, List<Card>> entry : valueGroups.entrySet()) {
+                if (entry.getValue().size() == 4) {
+                    // 炸弹必须比目标炸弹大（如果是炸弹对炸弹）
+                    if (target.getType() == CardType.BOMB) {
+                        if (entry.getKey() > target.getMainValue()) {
+                            beatingPlays.add(new ArrayList<>(entry.getValue()));
+                        }
+                    } else {
+                        beatingPlays.add(new ArrayList<>(entry.getValue()));
+                    }
                 }
             }
         }
 
-        // 同类型的更大牌
+        // 3. 同类型牌比较
         List<List<Card>> allPlays = getAllValidPlays(hand);
         for (List<Card> play : allPlays) {
             CardPattern pattern = recognizePattern(play);
-            if (pattern.canBeat(target)) {
+
+            // 检查是否是同类型且可以压过
+            if (isSameTypeAndCanBeat(pattern, target)) {
                 String playKey = getPlayKey(play);
                 if (!addedPlays.contains(playKey)) {
                     beatingPlays.add(play);
@@ -476,6 +490,38 @@ public class GameLogic {
         }
 
         return beatingPlays;
+    }
+
+    /**
+     * 检查是否是同类型且可以压过
+     */
+    private static boolean isSameTypeAndCanBeat(CardPattern pattern, CardPattern target) {
+        // 不同类型不能比较（除了炸弹和火箭）
+        if (pattern.getType() != target.getType() &&
+                pattern.getType() != CardType.BOMB &&
+                pattern.getType() != CardType.ROCKET) {
+            return false;
+        }
+
+        // 特殊牌型处理
+        switch (pattern.getType()) {
+            case STRAIGHT:
+            case PAIR_STRAIGHT:
+            case TRIPLE_STRAIGHT:
+                // 顺子系列必须长度相同
+                return pattern.getLength() == target.getLength() &&
+                        pattern.getMainValue() > target.getMainValue();
+
+            case FOUR_WITH_TWO_SINGLES:
+            case FOUR_WITH_TWO_PAIRS:
+                // 四带二只能同类型比较
+                return pattern.getType() == target.getType() &&
+                        pattern.getMainValue() > target.getMainValue();
+
+            default:
+                // 其他类型只需主牌值更大
+                return pattern.getMainValue() > target.getMainValue();
+        }
     }
 
     /**

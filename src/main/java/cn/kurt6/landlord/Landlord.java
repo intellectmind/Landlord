@@ -35,7 +35,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
     private final Map<String, GameRoom> gameRooms = new ConcurrentHashMap<>();
     private int roomCounter = 1;
     private StatsManager statsManager;
-    private int turnTimeout = 30; // 默认值
+    private int turnTimeout = 60; // 默认值
     private Economy econ;
     private boolean bountyEnabled;
     private int moneyMultiplier;
@@ -84,7 +84,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
 
     public void loadConfig() {
         reloadConfig();
-        turnTimeout = getConfig().getInt("turn-timeout", 30);
+        turnTimeout = getConfig().getInt("turn-timeout", 60);
         bountyEnabled = getConfig().getBoolean("bounty-enabled", false);
         moneyMultiplier = getConfig().getInt("money-multiplier", 100);
         scoreboardEnabled = getConfig().getBoolean("scoreboard-enabled", false);
@@ -485,16 +485,6 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
             return;
         }
 
-        // 金币赛检查
-        if (room.isMoneyGame() && isBountyEnabled()) {
-            double required = getMoneyMultiplier();
-            if (!getEconomy().has(player, required)) {
-                player.sendMessage(ChatColor.RED + "加入失败！该房间是金币赛，需要至少 " + required +
-                        " 金币，你当前只有 " + getEconomy().getBalance(player) + " 金币");
-                return;
-            }
-        }
-
         playerRooms.put(player.getUniqueId(), room);
         room.addPlayer(player);
         player.sendMessage(ChatColor.GREEN + "成功加入房间: " + roomId);
@@ -570,6 +560,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
     private void openRoomListGUI(Player player, int page) {
         if (gameRooms.isEmpty()) {
             player.sendMessage(ChatColor.YELLOW + "当前没有房间");
+            player.closeInventory();
             return;
         }
 
@@ -591,7 +582,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         // 添加房间物品
         for (int i = startIndex; i < endIndex; i++) {
             GameRoom room = sortedRooms.get(i);
-            gui.setItem(i - startIndex, createRoomItem(room));
+            gui.setItem(i - startIndex, createRoomItem(player, room));
         }
 
         // 添加分页按钮
@@ -600,33 +591,50 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         player.openInventory(gui);
     }
 
-    private ItemStack createRoomItem(GameRoom room) {
+    private ItemStack createRoomItem(Player viewer, GameRoom room) {
         Material material;
         ChatColor color;
         String status;
 
         // 金币房特殊处理（带附魔效果）
         if (room.isMoneyGame()) {
-            material = room.isGameStarted() ? Material.GOLD_BLOCK : Material.EMERALD_BLOCK;
+            // 检查玩家金币是否足够
+            double playerBalance = econ.getBalance(viewer);
+            double required = getMoneyMultiplier();
+            boolean hasEnough = playerBalance >= required;
+
+            // 根据金币是否足够选择不同材质
+            if (hasEnough) {
+                material = room.isGameStarted() ? Material.GOLD_BLOCK : Material.EMERALD_BLOCK;
+            } else {
+                material = room.isGameStarted() ? Material.REDSTONE_BLOCK : Material.COAL_BLOCK;
+            }
+
             ItemStack item = new ItemStack(material);
             ItemMeta meta = item.getItemMeta();
 
-            // 添加附魔光效
-            meta.addEnchant(Enchantment.VANISHING_CURSE, 1, true);  // 使用消失诅咒
-            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);  // 隐藏"附魔"文字
+            // 金币足够的才有附魔光效
+            if (hasEnough) {
+                meta.addEnchant(Enchantment.VANISHING_CURSE, 1, true);
+                meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+            }
 
             status = room.isGameStarted() ? ChatColor.RED + "游戏中(金币房)" : ChatColor.GREEN + "等待中(金币房)";
-            meta.setDisplayName(ChatColor.GOLD + room.getRoomId());
+            meta.setDisplayName((hasEnough ? ChatColor.GOLD : ChatColor.GRAY) + room.getRoomId());
 
             List<String> lore = new ArrayList<>();
             lore.add(ChatColor.GRAY + "状态: " + status);
             lore.add(ChatColor.GRAY + "玩家: " + room.getPlayerCount() + "/3");
             lore.add(ChatColor.GRAY + "倍数: " + room.getMultiplier());
+            lore.add(ChatColor.GOLD + "金币要求: " + required);
+            lore.add(ChatColor.YELLOW + "我的金币: " + playerBalance +
+                    (hasEnough ? ChatColor.GREEN + " (满足要求)" : ChatColor.RED + " (不满足要求)"));
+
             if (room.getRoomOwner() != null) {
                 lore.add(ChatColor.GRAY + "房主: " + room.getRoomOwner().getName());
             }
             lore.add("");
-            lore.add(ChatColor.YELLOW + "点击加入房间");
+            lore.add(hasEnough ? ChatColor.YELLOW + "点击加入房间" : ChatColor.GRAY + "金币不足无法加入");
 
             meta.setLore(lore);
             item.setItemMeta(meta);
@@ -689,36 +697,61 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         if (!(event.getWhoClicked() instanceof Player)) return;
         Player player = (Player) event.getWhoClicked();
 
-        String title = event.getView().getTitle();
-        event.setCancelled(true);
+        // 防止点击自己物品栏
+        if (event.getClickedInventory() != event.getView().getTopInventory()) {
+            return;
+        }
+
+        event.setCancelled(true); // 先取消事件
 
         ItemStack clicked = event.getCurrentItem();
         if (clicked == null || !clicked.hasItemMeta()) return;
 
+        String title = event.getView().getTitle();
+
         // 处理确认对话框
         if (title.equals(ChatColor.RED + "确认切换房间?")) {
-            if (clicked.getItemMeta().getDisplayName().equals(ChatColor.GREEN + "确认切换")) {
-                // 离开当前房间
-                GameRoom currentRoom = playerRooms.get(player.getUniqueId());
-                if (currentRoom != null) {
-                    currentRoom.removePlayer(player);
-                    playerRooms.remove(player.getUniqueId());
-                }
-                // 打开房间列表
-                openRoomListGUI(player, 1);
-            } else if (clicked.getItemMeta().getDisplayName().equals(ChatColor.RED + "取消")) {
-                player.closeInventory();
-            }
+            handleConfirmDialogClick(player, clicked);
             return;
         }
 
         // 处理房间列表GUI
-        if (!title.startsWith(ChatColor.GOLD + "房间列表")) return;
+        if (title.startsWith(ChatColor.GOLD + "房间列表")) {
+            handleRoomListClick(player, clicked, title);
+        }
+    }
 
-        event.setCancelled(true);
+    private void handleConfirmDialogClick(Player player, ItemStack clicked) {
+        GameRoom room = playerRooms.get(player.getUniqueId());
+        if (room == null) return;
 
-        if (clicked == null || !clicked.hasItemMeta()) return;
+        // 游戏进行中禁止离开
+        if (room.isGameStarted()) {
+            player.sendMessage(ChatColor.RED + "游戏进行中，无法离开房间！");
+            return;
+        }
 
+        String displayName = clicked.getItemMeta().getDisplayName();
+        if (displayName.equals(ChatColor.GREEN + "确认切换")) {
+            // 离开当前房间
+            GameRoom currentRoom = playerRooms.get(player.getUniqueId());
+            if (currentRoom != null) {
+                currentRoom.removePlayer(player);
+                playerRooms.remove(player.getUniqueId());
+
+                // 如果房间空了，删除房间
+                if (currentRoom.getPlayerCount() == 0) {
+                    gameRooms.remove(currentRoom.getRoomId());
+                }
+            }
+            // 打开房间列表
+            openRoomListGUI(player, 1);
+        } else if (displayName.equals(ChatColor.RED + "取消")) {
+            player.closeInventory();
+        }
+    }
+
+    private void handleRoomListClick(Player player, ItemStack clicked, String title) {
         String displayName = clicked.getItemMeta().getDisplayName();
 
         try {
@@ -730,19 +763,48 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
             // 处理翻页按钮
             if (displayName.equals(ChatColor.YELLOW + "上一页")) {
                 openRoomListGUI(player, currentPage - 1);
+                return;
             } else if (displayName.equals(ChatColor.YELLOW + "下一页")) {
                 openRoomListGUI(player, currentPage + 1);
+                return;
             }
+
             // 处理房间点击
-            else if (clicked.getItemMeta().hasLore() &&
-                    clicked.getItemMeta().getLore().contains(ChatColor.YELLOW + "点击加入房间")) {
-                String roomId = ChatColor.stripColor(clicked.getItemMeta().getDisplayName());
-                player.closeInventory();
-                joinRoom(player, roomId);
+            if (clicked.getItemMeta().hasLore()) {
+                List<String> lore = clicked.getItemMeta().getLore();
+                if (lore.contains(ChatColor.YELLOW + "点击加入房间")) {
+                    String roomId = ChatColor.stripColor(displayName);
+                    joinRoomFromGUI(player, roomId);
+                }
             }
         } catch (Exception e) {
             getLogger().warning("处理GUI点击时出错: " + e.getMessage());
         }
+    }
+
+    private void joinRoomFromGUI(Player player, String roomId) {
+        // 获取目标房间
+        GameRoom targetRoom = gameRooms.get(roomId);
+        if (targetRoom == null) {
+            player.sendMessage(ChatColor.RED + "房间不存在或已关闭！");
+            return;
+        }
+
+        // 如果是金币房，检查玩家金币是否足够
+        if (targetRoom.isMoneyGame() && isBountyEnabled()) {
+            double required = getMoneyMultiplier();
+            double playerBalance = econ.getBalance(player);
+
+            if (playerBalance < required) {
+                player.sendMessage(ChatColor.RED + "加入失败！该房间是金币赛，需要至少 " + required +
+                        " 金币，你当前只有 " + playerBalance + " 金币");
+                player.closeInventory();
+                return;
+            }
+        }
+
+        player.closeInventory();
+        joinRoom(player, roomId);
     }
 
     @EventHandler

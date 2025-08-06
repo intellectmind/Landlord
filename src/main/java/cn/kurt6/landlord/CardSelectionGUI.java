@@ -3,12 +3,14 @@ package cn.kurt6.landlord;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -111,8 +113,15 @@ public class CardSelectionGUI implements Listener {
         GameLogic.CardPattern pattern = GameLogic.recognizePattern(selectedCards);
         boolean isValid = pattern.getType() != GameLogic.CardType.INVALID;
 
+        // 检查是否能压过上家
+        boolean canBeat = true;
+        if (isValid && !gameRoom.getLastPlayedCards().isEmpty()) {
+            GameLogic.CardPattern lastPattern = GameLogic.recognizePattern(gameRoom.getLastPlayedCards());
+            canBeat = pattern.canBeat(lastPattern);
+        }
+
         // 更新确认按钮状态
-        ItemStack confirmButton = inv.getItem((inv.getSize()/9 - 2)*9); // 确认按钮位置
+        ItemStack confirmButton = inv.getItem((inv.getSize()/9 - 2)*9);
         if (confirmButton != null) {
             ItemMeta meta = confirmButton.getItemMeta();
             if (selected.isEmpty()) {
@@ -120,9 +129,15 @@ public class CardSelectionGUI implements Listener {
                 meta.setDisplayName(ChatColor.GRAY + "✖ 请选择牌");
                 meta.setLore(Collections.singletonList(ChatColor.RED + "请先选择要出的牌"));
             } else if (isValid) {
-                confirmButton.setType(Material.LIME_WOOL);
-                meta.setDisplayName(ChatColor.GREEN + "✔ 确认出牌");
-                meta.setLore(Collections.singletonList(ChatColor.GRAY + "牌型: " + GameRoom.getPatternName(pattern.getType())));
+                if (canBeat) {  // 只有能压过时才显示绿色确认按钮
+                    confirmButton.setType(Material.LIME_WOOL);
+                    meta.setDisplayName(ChatColor.GREEN + "✔ 确认出牌");
+                    meta.setLore(Collections.singletonList(ChatColor.GRAY + "牌型: " + GameRoom.getPatternName(pattern.getType())));
+                } else {
+                    confirmButton.setType(Material.RED_WOOL);
+                    meta.setDisplayName(ChatColor.RED + "✖ 无法压过");
+                    meta.setLore(Collections.singletonList(ChatColor.RED + "无法压过上家的牌"));
+                }
             } else {
                 confirmButton.setType(Material.RED_WOOL);
                 meta.setDisplayName(ChatColor.RED + "✖ 无效牌型");
@@ -242,6 +257,13 @@ public class CardSelectionGUI implements Listener {
         lore.add(selected ? ChatColor.RED + "★ 已选中 (点击取消)" : ChatColor.GREEN + "点击选择");
 
         meta.setLore(lore);
+
+        // 如果牌被选中，添加附魔效果
+        if (selected) {
+            meta.addEnchant(Enchantment.VANISHING_CURSE, 1, true);
+            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS); // 隐藏"附魔"文字
+        }
+
         item.setItemMeta(meta);
         return item;
     }
@@ -331,28 +353,22 @@ public class CardSelectionGUI implements Listener {
                     player.closeInventory();
                     break;
                 case 4: // 1分按钮
-                    if (clickedItem.getType() == Material.GRAY_WOOL) {
-                        player.sendMessage(ChatColor.RED + "叫分必须高于当前最高分！");
-                    } else {
-                        gameRoom.handleBiddingCommand(player, "1分");
-                        player.closeInventory();
-                    }
-                    break;
                 case 5: // 2分按钮
-                    if (clickedItem.getType() == Material.GRAY_WOOL) {
-                        player.sendMessage(ChatColor.RED + "叫分必须高于当前最高分！");
-                    } else {
-                        gameRoom.handleBiddingCommand(player, "2分");
-                        player.closeInventory();
-                    }
-                    break;
                 case 6: // 3分按钮
+                    // 检查按钮是否被禁用（灰色）
                     if (clickedItem.getType() == Material.GRAY_WOOL) {
                         player.sendMessage(ChatColor.RED + "叫分必须高于当前最高分！");
-                    } else {
-                        gameRoom.handleBiddingCommand(player, "3分");
-                        player.closeInventory();
+                        return; // 直接返回，不处理无效点击
                     }
+                    // 根据按钮位置确定叫分
+                    String bidCommand = "";
+                    switch (event.getSlot()) {
+                        case 4: bidCommand = "1分"; break;
+                        case 5: bidCommand = "2分"; break;
+                        case 6: bidCommand = "3分"; break;
+                    }
+                    gameRoom.handleBiddingCommand(player, bidCommand);
+                    player.closeInventory();
                     break;
                 // 0-2是信息按钮，7-8是信息/空位，不需要处理
             }
@@ -469,6 +485,16 @@ public class CardSelectionGUI implements Listener {
         for (int index : selectedIndices) {
             if (index < cards.size()) {
                 selectedCards.add(cards.get(index));
+            }
+        }
+
+        if (!gameRoom.getLastPlayedCards().isEmpty()) {
+            GameLogic.CardPattern currentPattern = GameLogic.recognizePattern(selectedCards);
+            GameLogic.CardPattern lastPattern = GameLogic.recognizePattern(gameRoom.getLastPlayedCards());
+
+            if (!currentPattern.canBeat(lastPattern)) {
+                player.sendMessage(ChatColor.RED + "无法压过上家的牌！请重新选择");
+                return;
             }
         }
 

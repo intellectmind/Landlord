@@ -1,8 +1,8 @@
 # 玩家出牌的最大等待时间（秒）
 turn-timeout: 60
-# 是否开启计分板的显示部分信息，禁用将用聊天消息代替，Folia核心强制使用聊天消息代替
+# 是否开启计分板显示部分信息，禁用将用新的一条Bossbar代替，Folia核心强制使用新Bossbar代替
 scoreboard-enabled: true
 
 # 金币赛设置，需要Vault经济支持
 bounty-enabled: true  # 是否启用金币赛功能
-money-multiplier: 50  # 金币倍率，最终金币=游戏倍数*这个值
+money-multiplier: 10  # 金币倍率，最终金币=游戏倍数*这个值
