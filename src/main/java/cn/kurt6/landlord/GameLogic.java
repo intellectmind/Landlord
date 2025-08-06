@@ -65,11 +65,13 @@ public class GameLogic {
                     return this.length == other.length && this.mainValue > other.mainValue;
                 }
 
-                // 四带二系列可以互相比较
-                if ((this.type == CardType.FOUR_WITH_TWO_SINGLES ||
-                        this.type == CardType.FOUR_WITH_TWO_PAIRS) &&
-                        (other.type == CardType.FOUR_WITH_TWO_SINGLES ||
-                                other.type == CardType.FOUR_WITH_TWO_PAIRS)) {
+                // 四带二系列只能同类型比较，不能互相比较
+                if (this.type == CardType.FOUR_WITH_TWO_SINGLES &&
+                        other.type == CardType.FOUR_WITH_TWO_SINGLES) {
+                    return this.mainValue > other.mainValue;
+                }
+                if (this.type == CardType.FOUR_WITH_TWO_PAIRS &&
+                        other.type == CardType.FOUR_WITH_TWO_PAIRS) {
                     return this.mainValue > other.mainValue;
                 }
 
@@ -82,7 +84,7 @@ public class GameLogic {
     }
 
     /**
-     * 识别牌型（优化版）
+     * 识别牌型
      */
     public static CardPattern recognizePattern(List<Card> cards) {
         if (cards == null || cards.isEmpty()) {
@@ -92,7 +94,12 @@ public class GameLogic {
         // 按牌值分组统计，并按牌值排序
         Map<Integer, Integer> valueCount = new TreeMap<>(Comparator.reverseOrder());
         for (Card card : cards) {
-            valueCount.put(card.getValue(), valueCount.getOrDefault(card.getValue(), 0) + 1);
+            int value = card.getValue();
+            // 检查牌值是否有效（3-17）
+            if (value < 3 || value > 17) {
+                return new CardPattern(CardType.INVALID, 0, cards, 0);
+            }
+            valueCount.put(value, valueCount.getOrDefault(value, 0) + 1);
         }
 
         int size = cards.size();
@@ -105,9 +112,8 @@ public class GameLogic {
         }
 
         // 炸弹识别
-        if (isBomb(valueCount, size)) {
-            return new CardPattern(CardType.BOMB, valueCount.keySet().iterator().next(), cards, 0);
-        }
+        CardPattern bombPattern = checkBomb(valueCount, size, cards);
+        if (bombPattern != null) return bombPattern;
 
         // 单牌、对子、三张
         CardPattern basicPattern = checkBasicPatterns(valueCount, size, cards);
@@ -138,20 +144,36 @@ public class GameLogic {
     }
 
     // 检查炸弹
-    private static boolean isBomb(Map<Integer, Integer> valueCount, int size) {
-        return size == 4 &&
-                valueCount.size() == 1 &&
-                valueCount.values().iterator().next() == 4;
+    private static CardPattern checkBomb(Map<Integer, Integer> valueCount, int size, List<Card> cards) {
+        if (size == 4 && valueCount.size() == 1) {
+            int value = valueCount.keySet().iterator().next();
+            int count = valueCount.get(value);
+            if (count == 4 && value >= 3 && value <= 15) { // 炸弹不能是王牌，且牌值有效
+                return new CardPattern(CardType.BOMB, value, cards, 0);
+            }
+        }
+        return null;
     }
 
     // 检查基础牌型（单牌、对子、三张）
     private static CardPattern checkBasicPatterns(Map<Integer, Integer> valueCount, int size, List<Card> cards) {
         if (valueCount.size() == 1) {
             int value = valueCount.keySet().iterator().next();
+            int count = valueCount.get(value);
+
             switch (size) {
-                case 1: return new CardPattern(CardType.SINGLE, value, cards, 0);
-                case 2: return new CardPattern(CardType.PAIR, value, cards, 0);
-                case 3: return new CardPattern(CardType.TRIPLE, value, cards, 0);
+                case 1:
+                    if (count == 1 && value >= 3 && value <= 17) // 单牌可以是王
+                        return new CardPattern(CardType.SINGLE, value, cards, 0);
+                    break;
+                case 2:
+                    if (count == 2 && value >= 3 && value <= 15) // 对子不能是王牌
+                        return new CardPattern(CardType.PAIR, value, cards, 0);
+                    break;
+                case 3:
+                    if (count == 3 && value >= 3 && value <= 15) // 三张不能是王牌
+                        return new CardPattern(CardType.TRIPLE, value, cards, 0);
+                    break;
             }
         }
         return null;
@@ -159,20 +181,35 @@ public class GameLogic {
 
     // 检查三带系列牌型
     private static CardPattern checkTriplePatterns(Map<Integer, Integer> valueCount, int size, List<Card> cards) {
-        if (size == 4 || size == 5) {
-            Optional<Map.Entry<Integer, Integer>> tripleEntry = valueCount.entrySet().stream()
-                    .filter(e -> e.getValue() == 3)
-                    .findFirst();
+        // 找出三张的牌
+        List<Integer> tripleValues = valueCount.entrySet().stream()
+                .filter(e -> e.getValue() == 3)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
 
-            if (tripleEntry.isPresent()) {
-                int mainValue = tripleEntry.get().getKey();
-                if (size == 4) {
-                    // 三带一
-                    return new CardPattern(CardType.TRIPLE_SINGLE, mainValue, cards, 0);
-                } else if (size == 5 && valueCount.size() == 2) {
-                    // 三带二
-                    return new CardPattern(CardType.TRIPLE_PAIR, mainValue, cards, 0);
-                }
+        if (tripleValues.size() != 1) return null;
+
+        int mainValue = tripleValues.get(0);
+        // 三带牌的主牌不能是王牌
+        if (mainValue >= 16) return null;
+
+        if (size == 4) {
+            // 三带一：必须有且只有一张单牌
+            long singleCount = valueCount.entrySet().stream()
+                    .filter(e -> e.getKey() != mainValue)
+                    .filter(e -> e.getValue() == 1)
+                    .count();
+            if (singleCount == 1 && valueCount.size() == 2) {
+                return new CardPattern(CardType.TRIPLE_SINGLE, mainValue, cards, 0);
+            }
+        } else if (size == 5) {
+            // 三带二：必须有且只有一对牌
+            long pairCount = valueCount.entrySet().stream()
+                    .filter(e -> e.getKey() != mainValue)
+                    .filter(e -> e.getValue() == 2)
+                    .count();
+            if (pairCount == 1 && valueCount.size() == 2) {
+                return new CardPattern(CardType.TRIPLE_PAIR, mainValue, cards, 0);
             }
         }
         return null;
@@ -180,29 +217,49 @@ public class GameLogic {
 
     // 检查四带系列牌型
     private static CardPattern checkFourWithPatterns(Map<Integer, Integer> valueCount, int size, List<Card> cards) {
-        Optional<Map.Entry<Integer, Integer>> fourEntry = valueCount.entrySet().stream()
+        // 找出四张的牌
+        List<Integer> fourValues = valueCount.entrySet().stream()
                 .filter(e -> e.getValue() == 4)
-                .findFirst();
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
 
-        if (!fourEntry.isPresent()) return null;
+        if (fourValues.size() != 1) return null;
 
-        int mainValue = fourEntry.get().getKey();
+        int mainValue = fourValues.get(0);
+        // 四带牌的主牌不能是王牌
+        if (mainValue >= 16) return null;
 
         if (size == 6) {
-            // 四带二（单牌）
-            int singleCount = (int) valueCount.values().stream()
-                    .filter(c -> c == 1)
+            // 四带二（单牌）：必须带两张不同值的单牌
+            long singleCount = valueCount.entrySet().stream()
+                    .filter(e -> e.getKey() != mainValue)
+                    .filter(e -> e.getValue() == 1)
                     .count();
-            if (singleCount == 2) {
-                return new CardPattern(CardType.FOUR_WITH_TWO_SINGLES, mainValue, cards, 0);
+
+            if (singleCount == 2 && valueCount.size() == 3) {
+                // 确保带的单牌不是王牌（可以带王牌，但两个王不能同时带）
+                boolean hasJokers = valueCount.containsKey(16) && valueCount.containsKey(17) &&
+                        valueCount.get(16) == 1 && valueCount.get(17) == 1;
+                if (!hasJokers) {
+                    return new CardPattern(CardType.FOUR_WITH_TWO_SINGLES, mainValue, cards, 0);
+                }
             }
         } else if (size == 8) {
-            // 四带两对
-            int pairCount = (int) valueCount.values().stream()
-                    .filter(c -> c == 2)
+            // 四带两对：必须带两对不同值的牌
+            long pairCount = valueCount.entrySet().stream()
+                    .filter(e -> e.getKey() != mainValue)
+                    .filter(e -> e.getValue() == 2)
                     .count();
-            if (pairCount == 2) {
-                return new CardPattern(CardType.FOUR_WITH_TWO_PAIRS, mainValue, cards, 0);
+
+            if (pairCount == 2 && valueCount.size() == 3) {
+                // 确保带的对子不是王牌
+                boolean hasJokerPairs = valueCount.entrySet().stream()
+                        .filter(e -> e.getKey() != mainValue)
+                        .filter(e -> e.getValue() == 2)
+                        .anyMatch(e -> e.getKey() >= 16);
+                if (!hasJokerPairs) {
+                    return new CardPattern(CardType.FOUR_WITH_TWO_PAIRS, mainValue, cards, 0);
+                }
             }
         }
 
@@ -212,75 +269,84 @@ public class GameLogic {
     // 检查顺子系列牌型
     private static CardPattern checkStraightPatterns(Map<Integer, Integer> valueCount, int size, List<Card> cards) {
         List<Integer> values = new ArrayList<>(valueCount.keySet());
-        if (containsJokers(values)) {
+        values.sort(Collections.reverseOrder());
+
+        // 顺子不能包含2和王牌
+        if (containsInvalidStraightCards(values)) {
             return null;
         }
 
-        // 单顺
+        // 单顺：5张或更多连续单牌
         if (size >= 5 && valueCount.values().stream().allMatch(c -> c == 1)) {
-            if (isConsecutive(values)) {
+            if (isConsecutive(values) && values.get(0) <= 14) { // 顺子最大到A(14)
                 return new CardPattern(CardType.STRAIGHT, values.get(0), cards, size);
             }
         }
 
-        // 双顺
-        if (size >= 6 && size % 2 == 0 &&
+        // 双顺（连对）：3对或更多连续对子
+        if (size >= 6 && size % 2 == 0 && valueCount.size() >= 3 &&
                 valueCount.values().stream().allMatch(c -> c == 2)) {
-            if (isConsecutive(values)) {
+            if (isConsecutive(values) && values.get(0) <= 14) {
                 return new CardPattern(CardType.PAIR_STRAIGHT, values.get(0), cards, size / 2);
             }
         }
 
-        // 飞机
+        // 飞机：2个或更多连续三张（可带牌）
         return checkAirplanePattern(valueCount, size, cards);
     }
 
     // 检查飞机牌型
     private static CardPattern checkAirplanePattern(Map<Integer, Integer> valueCount, int size, List<Card> cards) {
-        // 找出所有三张及以上的牌值
-        Map<Integer, Integer> tripleOrMore = valueCount.entrySet().stream()
-                .filter(e -> e.getValue() >= 3)
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-
-        if (tripleOrMore.size() < 2) return null;
-
-        List<Integer> tripleValues = tripleOrMore.keySet().stream()
-                .sorted(Comparator.reverseOrder())
+        // 找出所有三张的牌值（包括四张中的三张）
+        List<Integer> tripleValues = valueCount.entrySet().stream()
+                .filter(e -> e.getValue() >= 3) // 三张或四张都算
+                .map(Map.Entry::getKey)
+                .filter(v -> v <= 14) // 飞机不能包含2和王牌
+                .sorted(Collections.reverseOrder())
                 .collect(Collectors.toList());
+
+        if (tripleValues.size() < 2) return null;
 
         // 查找最长的连续三张序列
         List<Integer> longestSequence = findLongestConsecutiveSequence(tripleValues);
         if (longestSequence.size() < 2) return null;
 
-        // 计算总牌数
-        int totalTriples = longestSequence.size();
-        int totalCards = totalTriples * 3;
-        int extraCards = size - totalCards;
+        // 计算飞机部分的牌数
+        int airplaneCount = longestSequence.size();
+        int airplaneCards = airplaneCount * 3;
 
-        // 验证带牌是否合法
+        // 计算额外带牌数
+        int extraCards = size - airplaneCards;
+
+        // 计算可用于带牌的牌
+        Map<Integer, Integer> extraValueCount = new HashMap<>(valueCount);
+        for (int value : longestSequence) {
+            extraValueCount.put(value, extraValueCount.get(value) - 3);
+            if (extraValueCount.get(value) == 0) {
+                extraValueCount.remove(value);
+            }
+        }
+
+        // 纯飞机（不带牌）
         if (extraCards == 0) {
-            return new CardPattern(CardType.TRIPLE_STRAIGHT, longestSequence.get(0), cards, totalTriples);
+            return new CardPattern(CardType.TRIPLE_STRAIGHT, longestSequence.get(0), cards, airplaneCount);
         }
         // 飞机带单牌
-        else if (extraCards == totalTriples) {
-            // 确保带的是单牌
-            int singleCount = (int) valueCount.entrySet().stream()
-                    .filter(e -> !longestSequence.contains(e.getKey()))
-                    .filter(e -> e.getValue() == 1)
+        else if (extraCards == airplaneCount) {
+            int availableSingles = (int) extraValueCount.values().stream()
+                    .filter(count -> count >= 1)
                     .count();
-            if (singleCount >= totalTriples) {
-                return new CardPattern(CardType.TRIPLE_STRAIGHT, longestSequence.get(0), cards, totalTriples);
+            if (availableSingles >= airplaneCount) {
+                return new CardPattern(CardType.TRIPLE_STRAIGHT, longestSequence.get(0), cards, airplaneCount);
             }
         }
         // 飞机带对子
-        else if (extraCards == totalTriples * 2) {
-            // 确保带的是对子
-            int pairCount = (int) valueCount.entrySet().stream()
-                    .filter(e -> !longestSequence.contains(e.getKey()))
-                    .filter(e -> e.getValue() == 2)
+        else if (extraCards == airplaneCount * 2) {
+            int availablePairs = (int) extraValueCount.values().stream()
+                    .filter(count -> count >= 2)
                     .count();
-            if (pairCount >= totalTriples) {
-                return new CardPattern(CardType.TRIPLE_STRAIGHT, longestSequence.get(0), cards, totalTriples);
+            if (availablePairs >= airplaneCount) {
+                return new CardPattern(CardType.TRIPLE_STRAIGHT, longestSequence.get(0), cards, airplaneCount);
             }
         }
 
@@ -289,6 +355,8 @@ public class GameLogic {
 
     // 查找最长连续序列
     private static List<Integer> findLongestConsecutiveSequence(List<Integer> values) {
+        if (values.isEmpty()) return new ArrayList<>();
+
         List<Integer> longest = new ArrayList<>();
         List<Integer> current = new ArrayList<>();
 
@@ -314,7 +382,7 @@ public class GameLogic {
     }
 
     /**
-     * 检查数值是否连续
+     * 检查数值是否连续（降序）
      */
     private static boolean isConsecutive(List<Integer> values) {
         if (values.size() < 2) return false;
@@ -328,10 +396,10 @@ public class GameLogic {
     }
 
     /**
-     * 检查是否包含王牌
+     * 检查是否包含不能组成顺子的牌（2和王牌）
      */
-    private static boolean containsJokers(List<Integer> values) {
-        return values.contains(16) || values.contains(17);
+    private static boolean containsInvalidStraightCards(List<Integer> values) {
+        return values.contains(15) || values.contains(16) || values.contains(17); // 2, 小王, 大王
     }
 
     /**
@@ -356,15 +424,14 @@ public class GameLogic {
      */
     private static List<List<Card>> getAllValidPlays(List<Card> hand) {
         List<List<Card>> plays = new ArrayList<>();
+        Set<String> addedPlays = new HashSet<>(); // 防重复
 
         // 生成所有可能的组合并检查有效性
-        for (int len = 1; len <= hand.size(); len++) {
-            generateCombinations(hand, len, 0, new ArrayList<>(), plays);
+        for (int len = 1; len <= Math.min(hand.size(), 20); len++) { // 限制最大长度避免性能问题
+            generateCombinations(hand, len, 0, new ArrayList<>(), plays, addedPlays);
         }
 
-        return plays.stream()
-                .filter(cards -> recognizePattern(cards).getType() != CardType.INVALID)
-                .collect(Collectors.toList());
+        return plays;
     }
 
     /**
@@ -372,23 +439,25 @@ public class GameLogic {
      */
     private static List<List<Card>> getBeatingPlays(List<Card> hand, CardPattern target) {
         List<List<Card>> beatingPlays = new ArrayList<>();
+        Set<String> addedPlays = new HashSet<>();
 
-        // 王炸总是可以出
+        // 王炸总是可以出（如果有）
         List<Card> rockets = hand.stream()
                 .filter(card -> card.getValue() == 16 || card.getValue() == 17)
                 .collect(Collectors.toList());
-        if (rockets.size() == 2) {
+        if (rockets.size() == 2 && target.getType() != CardType.ROCKET) {
             beatingPlays.add(rockets);
         }
 
         // 如果目标不是炸弹，炸弹可以压过
         if (target.getType() != CardType.BOMB && target.getType() != CardType.ROCKET) {
             Map<Integer, List<Card>> valueGroups = hand.stream()
+                    .filter(card -> card.getValue() >= 3 && card.getValue() <= 15)
                     .collect(Collectors.groupingBy(Card::getValue));
 
             for (List<Card> group : valueGroups.values()) {
                 if (group.size() == 4) {
-                    beatingPlays.add(group);
+                    beatingPlays.add(new ArrayList<>(group));
                 }
             }
         }
@@ -398,7 +467,11 @@ public class GameLogic {
         for (List<Card> play : allPlays) {
             CardPattern pattern = recognizePattern(play);
             if (pattern.canBeat(target)) {
-                beatingPlays.add(play);
+                String playKey = getPlayKey(play);
+                if (!addedPlays.contains(playKey)) {
+                    beatingPlays.add(play);
+                    addedPlays.add(playKey);
+                }
             }
         }
 
@@ -409,17 +482,35 @@ public class GameLogic {
      * 生成组合
      */
     private static void generateCombinations(List<Card> hand, int len, int start,
-                                             List<Card> current, List<List<Card>> result) {
+                                             List<Card> current, List<List<Card>> result,
+                                             Set<String> addedPlays) {
         if (current.size() == len) {
-            result.add(new ArrayList<>(current));
+            CardPattern pattern = recognizePattern(current);
+            if (pattern.getType() != CardType.INVALID) {
+                String playKey = getPlayKey(current);
+                if (!addedPlays.contains(playKey)) {
+                    result.add(new ArrayList<>(current));
+                    addedPlays.add(playKey);
+                }
+            }
             return;
         }
 
         for (int i = start; i < hand.size(); i++) {
             current.add(hand.get(i));
-            generateCombinations(hand, len, i + 1, current, result);
+            generateCombinations(hand, len, i + 1, current, result, addedPlays);
             current.remove(current.size() - 1);
         }
+    }
+
+    /**
+     * 生成牌组的唯一标识（用于去重）
+     */
+    private static String getPlayKey(List<Card> cards) {
+        return cards.stream()
+                .map(card -> String.valueOf(card.getValue()))
+                .sorted()
+                .collect(Collectors.joining(","));
     }
 
     /**
@@ -463,9 +554,9 @@ public class GameLogic {
                 return Integer.compare(typesA, typesB);
             }
 
-            // 同类型按牌值排序
+            // 优先出较大的牌（在有多个选择时）
             if (patternA.getType() == patternB.getType()) {
-                return Integer.compare(patternA.getMainValue(), patternB.getMainValue());
+                return Integer.compare(patternB.getMainValue(), patternA.getMainValue());
             }
 
             // 不同类型按优先级排序
@@ -499,8 +590,10 @@ public class GameLogic {
             case STRAIGHT: return 6;
             case PAIR_STRAIGHT: return 7;
             case TRIPLE_STRAIGHT: return 8;
-            case BOMB: return 9;
-            case ROCKET: return 10;
+            case FOUR_WITH_TWO_SINGLES: return 9;
+            case FOUR_WITH_TWO_PAIRS: return 10;
+            case BOMB: return 11;
+            case ROCKET: return 12;
             default: return 999;
         }
     }

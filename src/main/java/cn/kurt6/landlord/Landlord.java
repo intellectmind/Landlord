@@ -4,6 +4,7 @@ import net.milkbowl.vault.economy.Economy;
 import net.md_5.bungee.api.chat.*;
 import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -15,9 +16,15 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.metadata.FixedMetadataValue;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.enchantments.Enchantment;
+import org.bukkit.inventory.ItemFlag;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,7 +62,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         getCommand("landlord").setExecutor(this);
         getCommand("landlord").setTabCompleter(this);
         getCommand("landlord_action").setExecutor(this);
-        getCommand("landlord_card").setExecutor(this);
+        getServer().getPluginManager().registerEvents(this, this);
         // 初始化统计管理器
         statsManager = new StatsManager(this);
 
@@ -114,22 +121,6 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
                 GameRoom room = playerRooms.get(player.getUniqueId());
                 if (room != null) {
                     room.handleActionCommand(player, args[0]);
-                }
-            }
-            return true;
-        }
-
-        // 处理选牌命令
-        if (command.getName().equals("landlord_card")) {
-            if (args.length > 0) {
-                try {
-                    int cardIndex = Integer.parseInt(args[0]);
-                    GameRoom room = playerRooms.get(player.getUniqueId());
-                    if (room != null) {
-                        room.handleCardSelection(player, cardIndex);
-                    }
-                } catch (NumberFormatException e) {
-                    // 忽略无效数字
                 }
             }
             return true;
@@ -353,7 +344,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         player.spigot().sendMessage(readyMsg);
 
         // 查看房间列表
-        TextComponent listMsg = new TextComponent(ChatColor.YELLOW + "/ddz list - 查看房间列表");
+        TextComponent listMsg = new TextComponent(ChatColor.YELLOW + "/ddz list - 打开房间列表GUI");
         listMsg.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
                 new ComponentBuilder("点击立即查看所有可用房间").color(net.md_5.bungee.api.ChatColor.GRAY).create()));
         listMsg.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ddz list"));
@@ -460,7 +451,18 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         return roomId.matches(regex);
     }
 
+    private final Map<UUID, Long> lastJoinAttempt = new ConcurrentHashMap<>(); // 记录上次点击时间
     private void joinRoom(Player player, String roomId) {
+        // 防止重复点击
+        long now = System.currentTimeMillis();
+        if (lastJoinAttempt.containsKey(player.getUniqueId())) {
+            long lastClick = lastJoinAttempt.get(player.getUniqueId());
+            if (now - lastClick < 100) {
+                return;
+            }
+        }
+        lastJoinAttempt.put(player.getUniqueId(), now);
+
         if (playerRooms.containsKey(player.getUniqueId())) {
             player.sendMessage(ChatColor.RED + "你已经在一个房间中了！");
             return;
@@ -533,90 +535,213 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
     }
 
     private void listRooms(Player player) {
+        // 如果玩家在房间中，显示确认对话框
+        if (playerRooms.containsKey(player.getUniqueId())) {
+            GameRoom currentRoom = playerRooms.get(player.getUniqueId());
+
+            // 创建确认GUI
+            Inventory confirmGui = Bukkit.createInventory(player, 27, ChatColor.RED + "确认切换房间?");
+
+            // 确认按钮
+            ItemStack confirm = new ItemStack(Material.GREEN_WOOL);
+            ItemMeta confirmMeta = confirm.getItemMeta();
+            confirmMeta.setDisplayName(ChatColor.GREEN + "确认切换");
+            confirmMeta.setLore(Arrays.asList(
+                    ChatColor.GRAY + "你当前在房间: " + currentRoom.getRoomId(),
+                    ChatColor.RED + "切换房间将自动离开当前房间"
+            ));
+            confirm.setItemMeta(confirmMeta);
+            confirmGui.setItem(11, confirm);
+
+            // 取消按钮
+            ItemStack cancel = new ItemStack(Material.RED_WOOL);
+            ItemMeta cancelMeta = cancel.getItemMeta();
+            cancelMeta.setDisplayName(ChatColor.RED + "取消");
+            cancel.setItemMeta(cancelMeta);
+            confirmGui.setItem(15, cancel);
+
+            player.openInventory(confirmGui);
+        } else {
+            // 不在房间中，直接打开房间列表
+            openRoomListGUI(player, 1);
+        }
+    }
+
+    private void openRoomListGUI(Player player, int page) {
         if (gameRooms.isEmpty()) {
             player.sendMessage(ChatColor.YELLOW + "当前没有房间");
             return;
         }
 
-        // 将房间列表转换为有序列表以便分页
-        List<GameRoom> roomList = new ArrayList<>(gameRooms.values());
+        // 创建6行(54格)的GUI
+        Inventory gui = Bukkit.createInventory(player, 54, ChatColor.GOLD + "房间列表 - 第 " + page + " 页");
 
-        // 排序：游戏中的房间靠后排列
-        roomList.sort((r1, r2) -> {
-            if (r1.isGameStarted() && !r2.isGameStarted()) {
-                return 1; // r1在游戏中，应该排在后面
-            } else if (!r1.isGameStarted() && r2.isGameStarted()) {
-                return -1; // r2在游戏中，r1应该排前面
-            }
-            return 0; // 保持原有顺序
+        // 排序房间：等待中的在前，游戏中的在后
+        List<GameRoom> sortedRooms = new ArrayList<>(gameRooms.values());
+        sortedRooms.sort((r1, r2) -> {
+            if (r1.isGameStarted() == r2.isGameStarted()) return 0;
+            return r1.isGameStarted() ? 1 : -1;
         });
 
-        // 从玩家元数据中获取当前页码（默认为1）
-        int currentPage = 1;
-        if (player.hasMetadata("landlord_page")) {
-            currentPage = player.getMetadata("landlord_page").get(0).asInt();
+        // 每页显示45个房间(5行)
+        int itemsPerPage = 45;
+        int startIndex = (page - 1) * itemsPerPage;
+        int endIndex = Math.min(startIndex + itemsPerPage, sortedRooms.size());
+
+        // 添加房间物品
+        for (int i = startIndex; i < endIndex; i++) {
+            GameRoom room = sortedRooms.get(i);
+            gui.setItem(i - startIndex, createRoomItem(room));
         }
 
-        // 每页显示10个房间
-        int roomsPerPage = 10;
-        int totalPages = (int) Math.ceil((double) roomList.size() / roomsPerPage);
+        // 添加分页按钮
+        addPaginationButtons(gui, page, (int) Math.ceil((double) sortedRooms.size() / itemsPerPage));
 
-        // 确保当前页在有效范围内
-        currentPage = Math.max(1, Math.min(currentPage, totalPages));
+        player.openInventory(gui);
+    }
 
-        // 存储当前页码供后续使用
-        player.setMetadata("landlord_page", new FixedMetadataValue(this, currentPage));
+    private ItemStack createRoomItem(GameRoom room) {
+        Material material;
+        ChatColor color;
+        String status;
 
-        // 计算当前页的房间范围
-        int start = (currentPage - 1) * roomsPerPage;
-        int end = Math.min(start + roomsPerPage, roomList.size());
+        // 金币房特殊处理（带附魔效果）
+        if (room.isMoneyGame()) {
+            material = room.isGameStarted() ? Material.GOLD_BLOCK : Material.EMERALD_BLOCK;
+            ItemStack item = new ItemStack(material);
+            ItemMeta meta = item.getItemMeta();
 
-        // 发送房间列表标题
-        player.sendMessage(ChatColor.GOLD + "=== 房间列表 (第 " + currentPage + "/" + totalPages + " 页) ===");
+            // 添加附魔光效
+            meta.addEnchant(Enchantment.VANISHING_CURSE, 1, true);  // 使用消失诅咒
+            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);  // 隐藏"附魔"文字
 
-        // 发送当前页的房间信息
-        for (int i = start; i < end; i++) {
-            GameRoom room = roomList.get(i);
-            String status = room.isGameStarted() ? "游戏中" : "等待中";
-            String moneyInfo = room.isMoneyGame() ? ChatColor.GOLD + " [金币赛]" : "";
+            status = room.isGameStarted() ? ChatColor.RED + "游戏中(金币房)" : ChatColor.GREEN + "等待中(金币房)";
+            meta.setDisplayName(ChatColor.GOLD + room.getRoomId());
 
-            // 创建可点击的房间信息
-            TextComponent roomInfo = new TextComponent(ChatColor.YELLOW + room.getRoomId() + " - " +
-                    room.getPlayerCount() + "/3 玩家 - " + status + moneyInfo);
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "状态: " + status);
+            lore.add(ChatColor.GRAY + "玩家: " + room.getPlayerCount() + "/3");
+            lore.add(ChatColor.GRAY + "倍数: " + room.getMultiplier());
+            if (room.getRoomOwner() != null) {
+                lore.add(ChatColor.GRAY + "房主: " + room.getRoomOwner().getName());
+            }
+            lore.add("");
+            lore.add(ChatColor.YELLOW + "点击加入房间");
 
-            // 添加点击加入功能
-            roomInfo.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ddz join " + room.getRoomId()));
-            roomInfo.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                    new ComponentBuilder("点击加入房间 " + room.getRoomId()).color(net.md_5.bungee.api.ChatColor.YELLOW).create()));
+            meta.setLore(lore);
+            item.setItemMeta(meta);
+            return item;
+        }
+        // 普通房间
+        else {
+            material = room.isGameStarted() ? Material.RED_WOOL : Material.LIME_WOOL;
+            color = room.isGameStarted() ? ChatColor.RED : ChatColor.GREEN;
+            status = room.isGameStarted() ? "游戏中" : "等待中";
 
-            player.spigot().sendMessage(roomInfo);
+            ItemStack item = new ItemStack(material);
+            ItemMeta meta = item.getItemMeta();
+            meta.setDisplayName(color + room.getRoomId());
+
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "状态: " + color + status);
+            lore.add(ChatColor.GRAY + "玩家: " + room.getPlayerCount() + "/3");
+            if (room.getRoomOwner() != null) {
+                lore.add(ChatColor.GRAY + "房主: " + room.getRoomOwner().getName());
+            }
+            lore.add("");
+            lore.add(ChatColor.YELLOW + "点击加入房间");
+
+            meta.setLore(lore);
+            item.setItemMeta(meta);
+            return item;
+        }
+    }
+
+    private void addPaginationButtons(Inventory gui, int currentPage, int totalPages) {
+        // 上一页按钮（位置48）
+        if (currentPage > 1) {
+            ItemStack prevPage = new ItemStack(Material.ARROW);
+            ItemMeta prevMeta = prevPage.getItemMeta();
+            prevMeta.setDisplayName(ChatColor.YELLOW + "上一页");
+            prevPage.setItemMeta(prevMeta);
+            gui.setItem(48, prevPage);
         }
 
-        // 发送分页导航按钮
-        if (totalPages > 1) {
-            ComponentBuilder pagination = new ComponentBuilder("导航: ");
+        // 当前页信息（位置49）
+        ItemStack pageInfo = new ItemStack(Material.PAPER);
+        ItemMeta pageMeta = pageInfo.getItemMeta();
+        pageMeta.setDisplayName(ChatColor.GOLD + "第 " + currentPage + "/" + totalPages + " 页");
+        pageInfo.setItemMeta(pageMeta);
+        gui.setItem(49, pageInfo);
 
-            // 上一页按钮
-            if (currentPage > 1) {
-                TextComponent prevBtn = new TextComponent("【上一页】");
-                prevBtn.setColor(net.md_5.bungee.api.ChatColor.GREEN);
-                prevBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ddz list " + (currentPage - 1)));
-                prevBtn.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                        new ComponentBuilder("上一页").color(net.md_5.bungee.api.ChatColor.YELLOW).create()));
-                pagination.append(prevBtn).append(" ");
+        // 下一页按钮（位置50）
+        if (currentPage < totalPages) {
+            ItemStack nextPage = new ItemStack(Material.ARROW);
+            ItemMeta nextMeta = nextPage.getItemMeta();
+            nextMeta.setDisplayName(ChatColor.YELLOW + "下一页");
+            nextPage.setItemMeta(nextMeta);
+            gui.setItem(50, nextPage);
+        }
+    }
+
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) return;
+        Player player = (Player) event.getWhoClicked();
+
+        String title = event.getView().getTitle();
+        event.setCancelled(true);
+
+        ItemStack clicked = event.getCurrentItem();
+        if (clicked == null || !clicked.hasItemMeta()) return;
+
+        // 处理确认对话框
+        if (title.equals(ChatColor.RED + "确认切换房间?")) {
+            if (clicked.getItemMeta().getDisplayName().equals(ChatColor.GREEN + "确认切换")) {
+                // 离开当前房间
+                GameRoom currentRoom = playerRooms.get(player.getUniqueId());
+                if (currentRoom != null) {
+                    currentRoom.removePlayer(player);
+                    playerRooms.remove(player.getUniqueId());
+                }
+                // 打开房间列表
+                openRoomListGUI(player, 1);
+            } else if (clicked.getItemMeta().getDisplayName().equals(ChatColor.RED + "取消")) {
+                player.closeInventory();
             }
+            return;
+        }
 
-            // 下一页按钮
-            if (currentPage < totalPages) {
-                TextComponent nextBtn = new TextComponent("【下一页】");
-                nextBtn.setColor(net.md_5.bungee.api.ChatColor.GREEN);
-                nextBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ddz list " + (currentPage + 1)));
-                nextBtn.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                        new ComponentBuilder("下一页").color(net.md_5.bungee.api.ChatColor.YELLOW).create()));
-                pagination.append(nextBtn);
+        // 处理房间列表GUI
+        if (!title.startsWith(ChatColor.GOLD + "房间列表")) return;
+
+        event.setCancelled(true);
+
+        if (clicked == null || !clicked.hasItemMeta()) return;
+
+        String displayName = clicked.getItemMeta().getDisplayName();
+
+        try {
+            // 从标题获取当前页码
+            int currentPage = Integer.parseInt(
+                    ChatColor.stripColor(title.split(" - 第 ")[1].split(" 页")[0])
+            );
+
+            // 处理翻页按钮
+            if (displayName.equals(ChatColor.YELLOW + "上一页")) {
+                openRoomListGUI(player, currentPage - 1);
+            } else if (displayName.equals(ChatColor.YELLOW + "下一页")) {
+                openRoomListGUI(player, currentPage + 1);
             }
-
-            player.spigot().sendMessage(pagination.create());
+            // 处理房间点击
+            else if (clicked.getItemMeta().hasLore() &&
+                    clicked.getItemMeta().getLore().contains(ChatColor.YELLOW + "点击加入房间")) {
+                String roomId = ChatColor.stripColor(clicked.getItemMeta().getDisplayName());
+                player.closeInventory();
+                joinRoom(player, roomId);
+            }
+        } catch (Exception e) {
+            getLogger().warning("处理GUI点击时出错: " + e.getMessage());
         }
     }
 
@@ -678,10 +803,6 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         }
     }
 
-    public void removeRoom(String roomId) {
-        gameRooms.remove(roomId);
-    }
-
     public StatsManager getStatsManager() {
         return statsManager;
     }
@@ -705,24 +826,5 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
 
     public int getMoneyMultiplier() {
         return moneyMultiplier;
-    }
-
-    public boolean hasEnoughMoney(Player player, int requiredMultiplier) {
-        if (!bountyEnabled) return true; // 如果金币赛未开启，则不检查
-
-        GameRoom room = playerRooms.get(player.getUniqueId());
-        if (room == null || !room.isMoneyGame()) return true; // 不在房间或不是金币赛，不检查
-
-        double requiredAmount = requiredMultiplier * moneyMultiplier;
-        return econ.has(player, requiredAmount);
-    }
-
-    public double getRequiredMoney(Player player) {
-        if (!bountyEnabled) return 0;
-
-        GameRoom room = playerRooms.get(player.getUniqueId());
-        if (room == null || !room.isMoneyGame()) return 0;
-
-        return moneyMultiplier; // 基础要求金额
     }
 }
