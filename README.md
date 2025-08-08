@@ -7,11 +7,12 @@
 ## 基础命令
 
 ### 主命令
-`/ddz` 或 `/landlord` - 显示帮助菜单
+`/ddz` 或 `/landlord` - 打开主菜单GUI
 
 ### 子命令
 | 命令 | 描述 | 用法示例 |
 |------|------|----------|
+| help | 显示帮助菜单 | `/ddz help` |
 | create | 创建房间 | `/ddz create [房间号]` |
 | join | 加入房间 | `/ddz join <房间号>` |
 | leave | 离开房间 | `/ddz leave` |
