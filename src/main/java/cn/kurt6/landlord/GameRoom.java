@@ -126,9 +126,9 @@ public class GameRoom {
     }
 
     public void removePlayer(Player player) {
-        // 游戏开始后禁止离开房间
-        if (gameStarted) {
-            player.sendMessage(ChatColor.RED + "游戏进行中，无法离开房间！");
+        // 如果是主动离开(通过命令)，且游戏已开始，则禁止
+        if (isGameStarted() && player.isOnline()) {
+            player.sendMessage(ChatColor.RED + "游戏进行中，无法主动离开房间！");
             return;
         }
 
@@ -146,17 +146,30 @@ public class GameRoom {
                 }
             }
         } catch (Exception e) {
-
+            // 忽略异常
         }
 
-        if (gameStarted) {
-            // 游戏开始后玩家离开，设置为托管状态
+        if (isGameStarted()) {
+            // 游戏开始后（BIDDING 或 PLAYING）玩家掉线，设置为托管
             autoPlay.put(player.getUniqueId(), true);
             broadcastToRoom(ChatColor.RED + player.getName() + " 掉线了，已自动托管！");
 
-            // 如果是当前玩家掉线，立即触发自动出牌
+            // 如果是当前玩家掉线，根据阶段自动处理
             if (player.equals(currentPlayer)) {
-                runTaskLater(() -> autoPlayCards(player), 5L);
+                runTaskLater(() -> {
+                    if (gameState == GameState.BIDDING) {
+                        handleBiddingCommand(player, "不叫");  // 叫分阶段自动"不叫"
+                    } else if (gameState == GameState.PLAYING) {
+                        autoPlayCards(player);  // 出牌阶段自动出牌
+                    }
+                }, 5L);
+            } else if (gameState == GameState.BIDDING) {
+                // 叫分阶段但非当前玩家掉线，检查是否轮到他时自动处理
+                runTaskLater(() -> {
+                    if (gameState == GameState.BIDDING && player.equals(currentPlayer)) {
+                        handleBiddingCommand(player, "不叫");
+                    }
+                }, 5L);
             }
         } else {
             // 游戏未开始，正常移除玩家
@@ -451,7 +464,6 @@ public class GameRoom {
 
     public void handleBiddingCommand(Player player, String command) {
         if (!player.equals(currentPlayer)) {
-            player.sendMessage(ChatColor.RED + "还没轮到你叫分！");
             return;
         }
 
@@ -466,20 +478,16 @@ public class GameRoom {
         // 严格验证叫分
         if (bidScore > 0) {
             if (bidScore <= currentBidScore) {
-                player.sendMessage(ChatColor.RED + "叫分必须比当前最高分(" + currentBidScore + "分)更高！");
-                // 重新打开叫分GUI
-                runTaskLater(() -> {
+                if (player.isOnline()) { // 只对在线玩家提示
+                    player.sendMessage(ChatColor.RED + "叫分必须比当前最高分(" + currentBidScore + "分)更高！");
                     cardSelectionGUI.openBiddingGUI(player);
-                    startBiddingTimer(player);
-                }, 2L);
+                }
+                startBiddingTimer(player);
                 return;
             }
             currentBidScore = bidScore;
             currentHighestBidder = player;
             broadcastToRoom(ChatColor.GREEN + player.getName() + " 叫了 " + bidScore + " 分！");
-
-            updateBossBar();
-            updateScoreboard();
 
             if (bidScore == 3) {
                 confirmLandlord(player, bidScore);
@@ -513,6 +521,13 @@ public class GameRoom {
         currentPlayer = biddingOrder.get(biddingIndex);
         biddingIndex++;
 
+        // 直接检测玩家是否在线
+        if (!currentPlayer.isOnline()) {
+            broadcastToRoom(ChatColor.RED + currentPlayer.getName() + " 已离线，自动跳过叫分");
+            handleBiddingCommand(currentPlayer, "不叫");
+            return;
+        }
+
         updateBossBar();
         updateScoreboard();
         broadcastToRoom(ChatColor.YELLOW + "请 " + currentPlayer.getName() + " 在 " + BIDDING_TIMEOUT + " 秒内叫分！");
@@ -520,7 +535,7 @@ public class GameRoom {
         // 打开叫分GUI
         cardSelectionGUI.openBiddingGUI(currentPlayer);
 
-        // 启动计时器，使用固定30秒
+        // 启动计时器
         startBiddingTimer(currentPlayer);
     }
 
@@ -556,6 +571,12 @@ public class GameRoom {
 
         // 检查玩家是否有效
         if (!player.isOnline() || currentPlayer == null || !currentPlayer.equals(player)) {
+            return;
+        }
+
+        // 如果是托管玩家，直接处理
+        if (autoPlay.get(player.getUniqueId())) {
+            handleBiddingCommand(player, "不叫");
             return;
         }
 
@@ -841,6 +862,14 @@ public class GameRoom {
         int nextIndex = (playerList.indexOf(currentPlayer) + 1) % playerList.size();
         currentPlayer = playerList.get(nextIndex);
 
+        // 直接检查玩家是否在线
+        if (!currentPlayer.isOnline()) {
+            autoPlay.put(currentPlayer.getUniqueId(), true);
+            broadcastToRoom(ChatColor.RED + currentPlayer.getName() + " 已掉线，自动托管！");
+            autoPlayCards(currentPlayer);
+            return;
+        }
+
         updateBossBar();
         updateScoreboard();
         broadcastToRoom(ChatColor.YELLOW + "请 " + currentPlayer.getName() + " 在 " + getTurnTimeout() + " 秒内出牌！");
@@ -857,7 +886,7 @@ public class GameRoom {
             currentPlayer.spigot().sendMessage(mes);
             currentPlayer.spigot().sendMessage(cancelButton);
 
-            runTaskLater(() -> autoPlayCards(currentPlayer), 40L); // 延迟2秒执行自动出牌
+            runTaskLater(() -> autoPlayCards(currentPlayer), 20L); // 延迟1秒执行自动出牌
         } else {
             // 非托管玩家显示GUI
             List<Card> cards = getPlayerCards(currentPlayer);
@@ -982,7 +1011,7 @@ public class GameRoom {
             } else {
                 passCard(player);
             }
-        }, 40L); // 延迟2秒执行自动出牌
+        }, 20L); // 延迟1秒执行自动出牌
     }
 
     // 根据牌值获取手牌中的索引

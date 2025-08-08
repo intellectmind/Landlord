@@ -855,12 +855,11 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         Player player = event.getPlayer();
         GameRoom room = playerRooms.get(player.getUniqueId());
         if (room != null) {
-            // 游戏进行中只标记为托管，不真正移除玩家
-            if (room.isGameStarted()) {
-                room.removePlayer(player); // 这会触发自动托管
-            } else {
-                // 游戏未开始，正常移除玩家
-                room.removePlayer(player);
+            // 直接调用removePlayer，此时player.isOnline()为false
+            room.removePlayer(player);
+
+            // 如果游戏未开始，才从playerRooms中移除
+            if (!room.isGameStarted()) {
                 playerRooms.remove(player.getUniqueId());
 
                 if (room.getPlayerCount() == 0) {
@@ -895,7 +894,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
     private void openMainMenu(Player player) {
         Inventory gui = Bukkit.createInventory(player, 27, ChatColor.GOLD + "斗地主主菜单");
 
-        // 创建房间按钮
+        // 创建房间按钮 (第一行中间)
         ItemStack createRoom = new ItemStack(Material.OAK_SIGN);
         ItemMeta createMeta = createRoom.getItemMeta();
         createMeta.setDisplayName(ChatColor.GREEN + "创建房间");
@@ -904,16 +903,16 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
                 ChatColor.GRAY + "可以自定义房间号或使用自动生成"
         ));
         createRoom.setItemMeta(createMeta);
-        gui.setItem(10, createRoom);
+        gui.setItem(11, createRoom); // 第一行中间
 
-        // 金币赛开关按钮（仅房主可见）
+        // 金币赛开关按钮 (第一行右侧)
         GameRoom currentRoom = playerRooms.get(player.getUniqueId());
         boolean isInRoom = currentRoom != null;
         boolean isRoomOwner = isInRoom && currentRoom.getRoomOwner() != null &&
                 currentRoom.getRoomOwner().equals(player);
 
-        ItemStack moneyGame = new ItemStack(isRoomOwner && currentRoom.isMoneyGame() ?
-                Material.GOLD_INGOT : Material.BARRIER);  // 不在房间中使用屏障图标
+        ItemStack moneyGame = new ItemStack(isRoomOwner && currentRoom != null && currentRoom.isMoneyGame() ?
+                Material.GOLD_INGOT : Material.BARRIER);
         ItemMeta moneyMeta = moneyGame.getItemMeta();
 
         if (isInRoom) {
@@ -938,9 +937,9 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         }
         moneyMeta.setLore(moneyLore);
         moneyGame.setItemMeta(moneyMeta);
-        gui.setItem(12, moneyGame);
+        gui.setItem(13, moneyGame); // 第一行右侧
 
-        // 房间列表按钮
+        // 房间列表按钮 (第二行中间)
         ItemStack roomList = new ItemStack(Material.BOOK);
         ItemMeta listMeta = roomList.getItemMeta();
         listMeta.setDisplayName(ChatColor.BLUE + "房间列表");
@@ -949,9 +948,9 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
                 ChatColor.GRAY + "可以加入其他玩家的房间"
         ));
         roomList.setItemMeta(listMeta);
-        gui.setItem(14, roomList);
+        gui.setItem(15, roomList); // 第二行中间
 
-        // 准备按钮（仅在房间中显示）
+        // 准备按钮 (第三行左侧)
         ItemStack readyBtn = new ItemStack(currentRoom != null ?
                 (currentRoom.getReadyStatus().getOrDefault(player.getUniqueId(), false) ?
                         Material.LIME_DYE : Material.GRAY_DYE) : Material.BARRIER);
@@ -972,24 +971,61 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         }
         readyMeta.setLore(readyLore);
         readyBtn.setItemMeta(readyMeta);
-        gui.setItem(16, readyBtn);
+        gui.setItem(20, readyBtn); // 第三行左侧
 
-        // 离开房间按钮（仅在房间中显示）
-        ItemStack leaveRoom = new ItemStack(currentRoom != null ?
-                Material.RED_BED : Material.BARRIER);
+        // 托管按钮 (第三行中间)
+        boolean isBiddingPhase = currentRoom != null && currentRoom.getGameState() == GameRoom.GameState.BIDDING;
+        ItemStack autoPlayBtn = new ItemStack(
+                currentRoom != null && currentRoom.isGameStarted() && !isBiddingPhase ?
+                        (currentRoom.isAutoPlay(player) ? Material.REDSTONE_TORCH : Material.LEVER) :
+                        Material.BARRIER
+        );
+        ItemMeta autoMeta = autoPlayBtn.getItemMeta();
+        autoMeta.setDisplayName(
+                currentRoom != null && currentRoom.isGameStarted() && !isBiddingPhase ?
+                        ChatColor.YELLOW + "托管状态: " +
+                                (currentRoom.isAutoPlay(player) ? ChatColor.RED + "已开启" : ChatColor.GREEN + "已关闭") :
+                        (isBiddingPhase ? ChatColor.RED + "叫分阶段不可托管" : ChatColor.RED + "游戏未开始")
+        );
+
+        List<String> autoLore = new ArrayList<>();
+        if (currentRoom != null && currentRoom.isGameStarted() && !isBiddingPhase) {
+            autoLore.add(ChatColor.GRAY + "当前状态: " +
+                    (currentRoom.isAutoPlay(player) ? ChatColor.RED + "已开启" : ChatColor.GREEN + "已关闭"));
+            autoLore.add(ChatColor.YELLOW + "点击切换托管状态");
+            autoLore.add(ChatColor.GRAY + "托管状态下系统会自动出牌");
+        } else if (isBiddingPhase) {
+            autoLore.add(ChatColor.RED + "叫分阶段不允许使用托管");
+        } else if (currentRoom != null) {
+            autoLore.add(ChatColor.GRAY + "游戏开始后才能使用托管");
+        } else {
+            autoLore.add(ChatColor.GRAY + "你需要先加入一个房间");
+        }
+        autoMeta.setLore(autoLore);
+        autoPlayBtn.setItemMeta(autoMeta);
+        gui.setItem(22, autoPlayBtn); // 第三行中间
+
+        // 离开房间按钮 (第三行右侧)
+        boolean canLeave = currentRoom != null && !currentRoom.isGameStarted();
+        ItemStack leaveRoom = new ItemStack(canLeave ? Material.RED_BED : Material.BARRIER);
         ItemMeta leaveMeta = leaveRoom.getItemMeta();
         leaveMeta.setDisplayName(currentRoom != null ?
-                ChatColor.RED + "离开房间" : ChatColor.GRAY + "你不在房间中");
+                (canLeave ? ChatColor.RED + "离开房间" : ChatColor.RED + "游戏进行中禁止离开") :
+                ChatColor.GRAY + "你不在房间中");
         List<String> leaveLore = new ArrayList<>();
         if (currentRoom != null) {
             leaveLore.add(ChatColor.GRAY + "当前房间: " + currentRoom.getRoomId());
-            leaveLore.add(ChatColor.RED + "点击离开当前房间");
+            if (canLeave) {
+                leaveLore.add(ChatColor.RED + "点击离开当前房间");
+            } else {
+                leaveLore.add(ChatColor.RED + "游戏进行中无法离开");
+            }
         } else {
             leaveLore.add(ChatColor.GRAY + "你需要先加入一个房间");
         }
         leaveMeta.setLore(leaveLore);
         leaveRoom.setItemMeta(leaveMeta);
-        gui.setItem(22, leaveRoom);
+        gui.setItem(24, leaveRoom); // 第三行右侧
 
         // 填充空白区域
         ItemStack filler = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
@@ -1039,11 +1075,36 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
                 player.sendMessage(ChatColor.RED + "你不在任何房间中！");
             }
         }
+        else if (displayName.contains("托管状态")) {
+            GameRoom room = playerRooms.get(player.getUniqueId());
+            if (room == null) {
+                player.sendMessage(ChatColor.RED + "你不在任何房间中！");
+                return;
+            }
+
+            // 检查是否是叫分阶段
+            if (room.getGameState() == GameRoom.GameState.BIDDING) {
+                player.sendMessage(ChatColor.RED + "叫分阶段不允许使用托管！");
+                return;
+            }
+
+            if (!room.isGameStarted()) {
+                player.sendMessage(ChatColor.RED + "游戏未开始，无法使用托管！");
+                return;
+            }
+
+            room.toggleAutoPlay(player);
+            openMainMenu(player); // 刷新GUI
+        }
         else if (displayName.contains("离开房间")) {
             GameRoom room = playerRooms.get(player.getUniqueId());
             if (room != null) {
-                player.closeInventory();
-                player.performCommand("ddz leave");
+                if (room.isGameStarted()) {
+                    player.sendMessage(ChatColor.RED + "游戏进行中，无法离开房间！");
+                } else {
+                    player.closeInventory();
+                    player.performCommand("ddz leave");
+                }
             } else {
                 player.sendMessage(ChatColor.RED + "你不在任何房间中！");
             }
