@@ -1,5 +1,5 @@
 name: Landlord
-version: 1.1.0
+version: 1.1.1
 description: 适用于Folia和Paper等核心的斗地主插件，可对接Vault经济支持
 main: cn.kurt6.landlord.Landlord
 api-version: 1.21

@@ -325,6 +325,21 @@ public class CardSelectionGUI implements Listener {
         if (!(event.getWhoClicked() instanceof Player)) return;
         Player player = (Player) event.getWhoClicked();
 
+        // 如果不是斗地主相关的GUI，直接返回不处理
+        String title = event.getView().getTitle();
+        if (!title.equals(ChatColor.GOLD + "选择要出的牌") &&
+                !title.equals(ChatColor.GOLD + "叫分选择(点击'1'或'2'可查看手牌和地主牌)")) {
+            return;
+        }
+
+        // 防止点击自己物品栏
+        if (event.getClickedInventory() != event.getView().getTopInventory()) {
+            event.setCancelled(true);
+            return;
+        }
+
+        event.setCancelled(true); // 取消斗地主GUI内的所有点击
+
         // 如果是托管玩家，直接返回
         if (gameRoom.isAutoPlay(player)) {
             event.setCancelled(true);
@@ -342,7 +357,6 @@ public class CardSelectionGUI implements Listener {
         if (clickedItem == null) return;
 
         // 获取库存标题的两种方式
-        String title;
         title = ChatColor.stripColor(event.getView().getTitle());
 
         // 判断GUI类型
@@ -414,18 +428,6 @@ public class CardSelectionGUI implements Listener {
 
         // 实时更新选择有效性和已选牌信息
         updateSelectionValidity(player, selected);
-    }
-
-    private void updateSelectedCount(Player player, Inventory inv, int count) {
-        int totalRows = inv.getSize() / 9;
-        int infoRow = (totalRows - 1) * 9;
-
-        ItemStack infoItem = inv.getItem(infoRow + 1);
-        if (infoItem != null) {
-            ItemMeta meta = infoItem.getItemMeta();
-            meta.setLore(Collections.singletonList(ChatColor.WHITE + getSelectedCountText(count)));
-            infoItem.setItemMeta(meta);
-        }
     }
 
     private void handleButtonClick(Player player, ItemStack clickedItem) {

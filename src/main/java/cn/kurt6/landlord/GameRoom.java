@@ -794,17 +794,24 @@ public class GameRoom {
         if (passCount >= 2 || lastWasRocket) {
             // 两人过牌或上家出王炸，重新开始
             lastPlayedCards.clear();
-            currentPlayer = lastPlayer;
             passCount = 0;
+
+            // 确保currentPlayer是最后一个出牌的人
+            if (lastPlayer != null) {
+                currentPlayer = lastPlayer;
+            } else {
+                // 如果没有lastPlayer（第一轮），保持当前顺序
+                List<Player> playerList = new ArrayList<>(players.values());
+                int nextIndex = (playerList.indexOf(player) + 1) % playerList.size();
+                currentPlayer = playerList.get(nextIndex);
+            }
+
             broadcastToRoom(ChatColor.YELLOW + "请 " + currentPlayer.getName() + " 出牌！");
-            showPlayerCards(currentPlayer, true);
             updateBossBar();
             updateScoreboard();
         } else {
             nextPlayer(); // 直接切换到下家
         }
-
-        updateBossBar();
 
         // 立即启动计时器或自动出牌
         if (autoPlay.get(currentPlayer.getUniqueId())) {
@@ -1530,6 +1537,10 @@ public class GameRoom {
     // 地主牌
     public List<Card> getLandlordCards() {
         return new ArrayList<>(landlordCards); // 返回副本避免外部修改
+    }
+
+    public Map<UUID, Boolean> getReadyStatus() {
+        return readyStatus;
     }
 
     public int getPassCount() {

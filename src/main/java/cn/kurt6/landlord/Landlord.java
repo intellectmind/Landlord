@@ -128,7 +128,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
 
         // 处理主命令
         if (args.length == 0) {
-            sendHelpMessage(player);
+            openMainMenu(player);
             return true;
         }
 
@@ -145,6 +145,9 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
                 break;
             case "leave":
                 leaveRoom(player);
+                break;
+            case "help":
+                sendHelpMessage(player);
                 break;
             case "ready":
                 toggleReady(player);
@@ -315,6 +318,13 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
     private void sendHelpMessage(Player player) {
         player.sendMessage(ChatColor.GOLD + "=== 斗地主游戏帮助 ===");
 
+        // 主菜单
+        TextComponent maingui = new TextComponent(ChatColor.YELLOW + "/ddz - 打开主菜单GUI");
+        maingui.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                new ComponentBuilder("点击打开主菜单GUI").color(net.md_5.bungee.api.ChatColor.GRAY).create()));
+        maingui.setClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, "/ddz "));
+        player.spigot().sendMessage(maingui);
+
         // 创建房间
         TextComponent createMsg = new TextComponent(ChatColor.YELLOW + "/ddz create <房间号 可选> - 创建房间");
         createMsg.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
@@ -379,7 +389,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         List<String> completions = new ArrayList<>();
         if (command.getName().equalsIgnoreCase("landlord")) {
             if (args.length == 1) {
-                List<String> subCommands = Arrays.asList("create", "join", "leave", "ready", "list", "stats", "top", "help", "money");
+                List<String> subCommands = Arrays.asList("create", "join", "leave", "ready", "list", "stats", "top", "help", "money", "help");
                 for (String subCmd : subCommands) {
                     if (subCmd.startsWith(args[0].toLowerCase())) {
                         completions.add(subCmd);
@@ -692,22 +702,50 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         }
     }
 
+    private final Map<UUID, Long> lastClickTimes = new HashMap<>();
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player)) return;
-        Player player = (Player) event.getWhoClicked();
 
-        // 防止点击自己物品栏
-        if (event.getClickedInventory() != event.getView().getTopInventory()) {
+        Player player = (Player) event.getWhoClicked();
+        Inventory clickedInventory = event.getClickedInventory();
+        String title = event.getView().getTitle();
+
+        // 如果不是斗地主相关的GUI，直接返回，不取消事件
+        if (!title.startsWith(ChatColor.GOLD + "斗地主主菜单") &&
+                !title.startsWith(ChatColor.GOLD + "房间列表") &&
+                !title.equals(ChatColor.RED + "确认切换房间?")) {
             return;
         }
 
-        event.setCancelled(true); // 先取消事件
+        // 冷却检查
+        long now = System.currentTimeMillis();
+        if (lastClickTimes.containsKey(player.getUniqueId())) {
+            long lastClick = lastClickTimes.get(player.getUniqueId());
+            if (now - lastClick < 100) { // 100毫秒冷却
+                event.setCancelled(true);
+                return;
+            }
+        }
+        lastClickTimes.put(player.getUniqueId(), now);
+
+        // 防止玩家点击自己的背包
+        if (clickedInventory != event.getView().getTopInventory()) {
+            event.setCancelled(true);
+            return;
+        }
+
+        // 到这里才取消事件（确保只影响斗地主GUI）
+        event.setCancelled(true);
 
         ItemStack clicked = event.getCurrentItem();
         if (clicked == null || !clicked.hasItemMeta()) return;
 
-        String title = event.getView().getTitle();
+        // 处理主菜单点击
+        if (title.startsWith(ChatColor.GOLD + "斗地主主菜单")) {
+            handleMainMenuClick(player, clicked);
+            return;
+        }
 
         // 处理确认对话框
         if (title.equals(ChatColor.RED + "确认切换房间?")) {
@@ -850,6 +888,164 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
                 Bukkit.getScheduler().runTask(this, () -> {
                     room.handleGameCommand(player, message);
                 });
+            }
+        }
+    }
+
+    private void openMainMenu(Player player) {
+        Inventory gui = Bukkit.createInventory(player, 27, ChatColor.GOLD + "斗地主主菜单");
+
+        // 创建房间按钮
+        ItemStack createRoom = new ItemStack(Material.OAK_SIGN);
+        ItemMeta createMeta = createRoom.getItemMeta();
+        createMeta.setDisplayName(ChatColor.GREEN + "创建房间");
+        createMeta.setLore(Arrays.asList(
+                ChatColor.GRAY + "点击创建一个新的斗地主房间",
+                ChatColor.GRAY + "可以自定义房间号或使用自动生成"
+        ));
+        createRoom.setItemMeta(createMeta);
+        gui.setItem(10, createRoom);
+
+        // 金币赛开关按钮（仅房主可见）
+        GameRoom currentRoom = playerRooms.get(player.getUniqueId());
+        boolean isInRoom = currentRoom != null;
+        boolean isRoomOwner = isInRoom && currentRoom.getRoomOwner() != null &&
+                currentRoom.getRoomOwner().equals(player);
+
+        ItemStack moneyGame = new ItemStack(isRoomOwner && currentRoom.isMoneyGame() ?
+                Material.GOLD_INGOT : Material.BARRIER);  // 不在房间中使用屏障图标
+        ItemMeta moneyMeta = moneyGame.getItemMeta();
+
+        if (isInRoom) {
+            moneyMeta.setDisplayName(isRoomOwner ?
+                    ChatColor.GOLD + "金币赛: " + (currentRoom.isMoneyGame() ?
+                            ChatColor.GREEN + "已开启" : ChatColor.RED + "已关闭") :
+                    ChatColor.GRAY + "金币赛: 仅房主可用");
+        } else {
+            moneyMeta.setDisplayName(ChatColor.RED + "金币赛: 未在房间中");
+        }
+
+        List<String> moneyLore = new ArrayList<>();
+        if (isRoomOwner) {
+            moneyLore.add(ChatColor.GRAY + "当前状态: " +
+                    (currentRoom.isMoneyGame() ? ChatColor.GREEN + "已开启" : ChatColor.RED + "已关闭"));
+            moneyLore.add(ChatColor.GRAY + "金币倍率: " + getMoneyMultiplier());
+            moneyLore.add(ChatColor.YELLOW + "点击切换金币赛状态");
+        } else if (isInRoom) {
+            moneyLore.add(ChatColor.GRAY + "只有房主可以开关金币赛");
+        } else {
+            moneyLore.add(ChatColor.GRAY + "你需要先加入或创建一个房间");
+        }
+        moneyMeta.setLore(moneyLore);
+        moneyGame.setItemMeta(moneyMeta);
+        gui.setItem(12, moneyGame);
+
+        // 房间列表按钮
+        ItemStack roomList = new ItemStack(Material.BOOK);
+        ItemMeta listMeta = roomList.getItemMeta();
+        listMeta.setDisplayName(ChatColor.BLUE + "房间列表");
+        listMeta.setLore(Arrays.asList(
+                ChatColor.GRAY + "点击查看所有可用房间",
+                ChatColor.GRAY + "可以加入其他玩家的房间"
+        ));
+        roomList.setItemMeta(listMeta);
+        gui.setItem(14, roomList);
+
+        // 准备按钮（仅在房间中显示）
+        ItemStack readyBtn = new ItemStack(currentRoom != null ?
+                (currentRoom.getReadyStatus().getOrDefault(player.getUniqueId(), false) ?
+                        Material.LIME_DYE : Material.GRAY_DYE) : Material.BARRIER);
+        ItemMeta readyMeta = readyBtn.getItemMeta();
+        readyMeta.setDisplayName(currentRoom != null ?
+                ChatColor.YELLOW + "准备状态: " +
+                        (currentRoom.getReadyStatus().getOrDefault(player.getUniqueId(), false) ?
+                                ChatColor.GREEN + "已准备" : ChatColor.RED + "未准备") :
+                ChatColor.RED + "你不在房间中");
+        List<String> readyLore = new ArrayList<>();
+        if (currentRoom != null) {
+            readyLore.add(ChatColor.GRAY + "当前状态: " +
+                    (currentRoom.getReadyStatus().getOrDefault(player.getUniqueId(), false) ?
+                            ChatColor.GREEN + "已准备" : ChatColor.RED + "未准备"));
+            readyLore.add(ChatColor.YELLOW + "点击切换准备状态");
+        } else {
+            readyLore.add(ChatColor.GRAY + "你需要先加入一个房间");
+        }
+        readyMeta.setLore(readyLore);
+        readyBtn.setItemMeta(readyMeta);
+        gui.setItem(16, readyBtn);
+
+        // 离开房间按钮（仅在房间中显示）
+        ItemStack leaveRoom = new ItemStack(currentRoom != null ?
+                Material.RED_BED : Material.BARRIER);
+        ItemMeta leaveMeta = leaveRoom.getItemMeta();
+        leaveMeta.setDisplayName(currentRoom != null ?
+                ChatColor.RED + "离开房间" : ChatColor.GRAY + "你不在房间中");
+        List<String> leaveLore = new ArrayList<>();
+        if (currentRoom != null) {
+            leaveLore.add(ChatColor.GRAY + "当前房间: " + currentRoom.getRoomId());
+            leaveLore.add(ChatColor.RED + "点击离开当前房间");
+        } else {
+            leaveLore.add(ChatColor.GRAY + "你需要先加入一个房间");
+        }
+        leaveMeta.setLore(leaveLore);
+        leaveRoom.setItemMeta(leaveMeta);
+        gui.setItem(22, leaveRoom);
+
+        // 填充空白区域
+        ItemStack filler = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+        ItemMeta fillerMeta = filler.getItemMeta();
+        fillerMeta.setDisplayName(" ");
+        filler.setItemMeta(fillerMeta);
+        for (int i = 0; i < gui.getSize(); i++) {
+            if (gui.getItem(i) == null) {
+                gui.setItem(i, filler);
+            }
+        }
+
+        player.openInventory(gui);
+    }
+
+    private void handleMainMenuClick(Player player, ItemStack clicked) {
+        String displayName = clicked.getItemMeta().getDisplayName();
+
+        if (displayName.contains("创建房间")) {
+            player.closeInventory();
+            player.performCommand("ddz create");
+        }
+        else if (displayName.contains("金币赛")) {
+            GameRoom room = playerRooms.get(player.getUniqueId());
+            if (room == null) {
+                player.sendMessage(ChatColor.RED + "你不在任何房间中！");
+                return;
+            }
+
+            if (room.getRoomOwner() != null && room.getRoomOwner().equals(player)) {
+                room.toggleMoneyGame(player);
+                openMainMenu(player); // 刷新GUI
+            } else {
+                player.sendMessage(ChatColor.RED + "只有房主可以开关金币赛！");
+            }
+        }
+        else if (displayName.contains("房间列表")) {
+            player.closeInventory();
+            player.performCommand("ddz list");
+        }
+        else if (displayName.contains("准备状态")) {
+            GameRoom room = playerRooms.get(player.getUniqueId());
+            if (room != null) {
+                room.toggleReady(player);
+                openMainMenu(player); // 刷新GUI
+            } else {
+                player.sendMessage(ChatColor.RED + "你不在任何房间中！");
+            }
+        }
+        else if (displayName.contains("离开房间")) {
+            GameRoom room = playerRooms.get(player.getUniqueId());
+            if (room != null) {
+                player.closeInventory();
+                player.performCommand("ddz leave");
+            } else {
+                player.sendMessage(ChatColor.RED + "你不在任何房间中！");
             }
         }
     }
