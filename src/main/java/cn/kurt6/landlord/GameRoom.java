@@ -91,7 +91,10 @@ public class GameRoom {
         this.plugin = plugin;
         this.bossBar = Bukkit.createBossBar("房间 " + roomId + " - 等待玩家加入",
                 BarColor.BLUE, BarStyle.SOLID);
-        this.scoreboardBossBar = Bukkit.createBossBar("", BarColor.PURPLE, BarStyle.SOLID);
+        // 只在计分板禁用时或Folia核心时创建scoreboardBossBar
+        if (!plugin.isScoreboardEnabled() || plugin.isFolia()) {
+            this.scoreboardBossBar = Bukkit.createBossBar("", BarColor.PURPLE, BarStyle.SOLID);
+        }
         this.cardSelectionGUI = new CardSelectionGUI(plugin, this);
     }
 
@@ -112,7 +115,9 @@ public class GameRoom {
         selectedCards.put(player.getUniqueId(), new ArrayList<>());
         bidStatus.put(player.getUniqueId(), 0);
         bossBar.addPlayer(player);
-        scoreboardBossBar.addPlayer(player);
+        if (scoreboardBossBar != null) {
+            scoreboardBossBar.addPlayer(player);
+        }
 
         updateBossBar();
         updateScoreboard();
@@ -134,7 +139,10 @@ public class GameRoom {
 
         lastHandMessages.remove(player.getUniqueId());
         bossBar.removePlayer(player);
-        scoreboardBossBar.removePlayer(player);
+        // 只在 scoreboardBossBar 不为 null 时移除玩家
+        if (scoreboardBossBar != null) {
+            scoreboardBossBar.removePlayer(player);
+        }
 
         // 清理玩家的记分板
         try {
@@ -629,6 +637,10 @@ public class GameRoom {
         // 强制关闭所有GUI
         player.closeInventory();
         forceCloseAllGUIs();
+
+        // 立即更新显示
+        updateBossBar();  // 确保BossBar更新到PLAYING状态
+        updateScoreboard(); // 立即更新计分板显示地主手牌数量
 
         // 延迟启动出牌阶段，确保GUI完全关闭
         runTaskLater(() -> {
@@ -1291,6 +1303,7 @@ public class GameRoom {
             sb.append(landlordCards.get(i).toString());
         }
         broadcastToRoom(sb.toString());
+        updateScoreboard();
     }
 
     private void sendGameButtons(Player player) {
@@ -1365,8 +1378,8 @@ public class GameRoom {
         // 如果游戏已结束，不更新计分板
         if (gameState == GameState.FINISHED) return;
 
-        // 如果计分板被禁用，显示bossbar
-        if (!plugin.isScoreboardEnabled()) {
+        // 如果计分板被禁用或者是Folia核心，显示bossbar
+        if (!plugin.isScoreboardEnabled() || plugin.isFolia()) {
             for (Player player : players.values()) {
                 updateScoreboardBossBar(player);
             }
@@ -1433,8 +1446,10 @@ public class GameRoom {
 
                         objective.getScore(ChatColor.GREEN + "手牌数量:").setScore(line.getAndDecrement());
                         players.values().forEach(p -> {
-                            int count = playerCards.getOrDefault(p.getUniqueId(), Collections.emptyList()).size();
-                            objective.getScore((p.equals(player) ? "你" : p.getName()) + ": " + count + "张")
+                            List<Card> cards = playerCards.get(p.getUniqueId());
+                            // 确保获取最新的手牌数量
+                            int count = cards != null ? cards.size() : 0;
+                            objective.getScore(p.getName() + ": " + count + "张")
                                     .setScore(line.getAndDecrement());
                         });
                     } else {
@@ -1442,7 +1457,7 @@ public class GameRoom {
                         players.values().forEach(p -> {
                             boolean ready = readyStatus.getOrDefault(p.getUniqueId(), false);
                             objective.getScore((ready ? ChatColor.GREEN + "✓ " : ChatColor.RED + "✗ ") +
-                                            (p.equals(player) ? "你" : p.getName()))
+                                            p.getName())  // 直接显示玩家名
                                     .setScore(line.getAndDecrement());
                         });
                     }
@@ -1472,25 +1487,34 @@ public class GameRoom {
 
         if (gameStarted) {
             info.append(ChatColor.AQUA).append("手牌数量: ");
-            for (Player p : players.values()) {
+            // 按固定顺序显示玩家信息（按加入顺序）
+            List<Player> orderedPlayers = new ArrayList<>(players.values());
+            // 按玩家名字排序确保顺序一致
+            orderedPlayers.sort(Comparator.comparing(Player::getName));
+
+            for (Player p : orderedPlayers) {
                 List<Card> cards = playerCards.get(p.getUniqueId());
                 int cardCount = cards != null ? cards.size() : 0;
-                String name = p.equals(player) ? "你" : p.getName();
+                String name = p.getName();  // 直接使用玩家名，不再判断"你"
                 info.append(name).append(":").append(cardCount).append(" ");
             }
         } else {
             info.append(ChatColor.WHITE).append("玩家状态: ");
-            for (Player p : players.values()) {
+            // 按固定顺序显示玩家信息（按加入顺序）
+            List<Player> orderedPlayers = new ArrayList<>(players.values());
+            // 按玩家名字排序确保顺序一致
+            orderedPlayers.sort(Comparator.comparing(Player::getName));
+
+            for (Player p : orderedPlayers) {
                 boolean ready = readyStatus.get(p.getUniqueId());
                 String status = ready ? ChatColor.GREEN + "✓" : ChatColor.RED + "✗";
-                String name = p.equals(player) ? "你" : p.getName();
+                String name = p.getName();  // 直接使用玩家名
                 info.append(status).append(name).append(" ");
             }
         }
 
         scoreboardBossBar.setTitle(info.toString());
         scoreboardBossBar.setProgress(1.0);
-
     }
 
     private void broadcastToRoom(String message) {
