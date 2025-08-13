@@ -1,4 +1,4 @@
-package cn.kurt6.back.bStats;
+package cn.kurt6.landlord.bStats;
 
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.YamlConfiguration;

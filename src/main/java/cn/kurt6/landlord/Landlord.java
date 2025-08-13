@@ -1,6 +1,5 @@
 package cn.kurt6.landlord;
 
-import net.milkbowl.vault.economy.Economy;
 import net.md_5.bungee.api.chat.*;
 import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Bukkit;
@@ -36,58 +35,100 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
     private int roomCounter = 1;
     private StatsManager statsManager;
     private int turnTimeout = 60; // 默认值
-    private Economy econ;
+    private Object econ = null; // 改为Object类型，避免直接引用Vault类
     private boolean bountyEnabled;
     private int moneyMultiplier;
     private boolean scoreboardEnabled = true;
+    private boolean vaultAvailable = false; // 标记Vault是否可用
 
     @Override
     public void onEnable() {
-        // bStats
-        int pluginId = 26770;
-        cn.kurt6.back.bStats.Metrics metrics = new cn.kurt6.back.bStats.Metrics(this, pluginId);
-
         // 保存默认配置
         saveDefaultConfig();
-        // 加载配置
+
+        // 1. 先检查Vault是否存在
+        vaultAvailable = Bukkit.getPluginManager().getPlugin("Vault") != null;
+
+        // 2. 加载配置（此时vaultAvailable已确定）
         loadConfig();
 
-        // 初始化经济系统
-        if (!setupEconomy()) {
-            getLogger().severe("未找到Vault经济系统插件，金币赛功能将不可用！");
+        // 3. 初始化经济系统（仅当bountyEnabled=true且Vault可用时）
+        if (bountyEnabled && vaultAvailable) {
+            if (!setupEconomy()) {
+                getLogger().warning("未找到Vault经济系统插件，金币赛功能将不可用！");
+                bountyEnabled = false; // 确保禁用
+            }
+        } else {
+            // 如果配置要求禁用或Vault不可用，强制关闭
             bountyEnabled = false;
         }
 
-        getServer().getPluginManager().registerEvents(this, this);
-        getCommand("landlord").setExecutor(this);
-        getCommand("landlord").setTabCompleter(this);
-        getCommand("landlord_action").setExecutor(this);
-        getServer().getPluginManager().registerEvents(this, this);
-        // 初始化统计管理器
+        // 其余初始化代码
         statsManager = new StatsManager(this);
+        getCommand("landlord").setExecutor(this);
+        getServer().getPluginManager().registerEvents(this, this);
 
-        getLogger().info("服务器类型: " + (isFolia() ? "Folia，该核心计分版暂不可用，将用聊天消息代替" : "Bukkit/Paper"));
-        getLogger().info("斗地主插件已启用！");
+        // 打印最终状态
+        getLogger().info("金币赛功能: " + (bountyEnabled ? "已启用" : "已禁用"));
     }
 
     private boolean setupEconomy() {
-        if (getServer().getPluginManager().getPlugin("Vault") == null) {
+        if (!bountyEnabled || !vaultAvailable) {
             return false;
         }
-        RegisteredServiceProvider<Economy> rsp = getServer().getServicesManager().getRegistration(Economy.class);
-        if (rsp == null) {
+
+        try {
+            // 使用反射来避免直接引用Vault类
+            Class<?> economyClass = Class.forName("net.milkbowl.vault.economy.Economy");
+            RegisteredServiceProvider<?> rsp = getServer().getServicesManager().getRegistration(economyClass);
+            if (rsp == null) {
+                return false;
+            }
+            econ = rsp.getProvider();
+            return econ != null;
+        } catch (ClassNotFoundException e) {
+            getLogger().warning("Vault Economy类不存在");
+            return false;
+        } catch (Exception e) {
+            getLogger().warning("初始化经济系统时出错: " + e.getMessage());
             return false;
         }
-        econ = rsp.getProvider();
-        return econ != null;
+    }
+
+    /**
+     * 获取玩家余额（使用反射调用Vault方法）
+     */
+    public double getPlayerBalance(Player player) {
+        if (!bountyEnabled || econ == null) {
+            return 0.0;
+        }
+
+        try {
+            // 使用反射调用 econ.getBalance(player)
+            return (Double) econ.getClass().getMethod("getBalance", org.bukkit.OfflinePlayer.class)
+                    .invoke(econ, player);
+        } catch (Exception e) {
+            getLogger().warning("获取玩家余额时出错: " + e.getMessage());
+            return 0.0;
+        }
     }
 
     public void loadConfig() {
         reloadConfig();
         turnTimeout = getConfig().getInt("turn-timeout", 60);
-        bountyEnabled = getConfig().getBoolean("bounty-enabled", false);
+
+        // 直接读取配置值，不在这里检查Vault（由onEnable处理）
+        boolean configBountyEnabled = getConfig().getBoolean("bounty-enabled", false);
+
+        // 仅当Vault可用时才可能启用
+        bountyEnabled = configBountyEnabled && vaultAvailable;
         moneyMultiplier = getConfig().getInt("money-multiplier", 100);
-        scoreboardEnabled = getConfig().getBoolean("scoreboard-enabled", false);
+        scoreboardEnabled = getConfig().getBoolean("scoreboard-enabled", true);
+
+        // 如果配置禁用或Vault不可用，确保econ为null
+        if (!bountyEnabled) {
+            econ = null;
+        }
     }
 
     public boolean isScoreboardEnabled() {
@@ -473,6 +514,20 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         }
         lastJoinAttempt.put(player.getUniqueId(), now);
 
+        GameRoom targetRoom = gameRooms.get(roomId);
+        // 如果是金币房，检查玩家金币是否足够
+        if (targetRoom.isMoneyGame() && isBountyEnabled()) {
+            double required = getMoneyMultiplier();
+            double playerBalance = getPlayerBalance(player);
+
+            if (playerBalance < required) {
+                player.sendMessage(ChatColor.RED + "加入失败！该房间是金币赛，需要至少 " + required +
+                        " 金币，你当前只有 " + playerBalance + " 金币");
+                player.closeInventory();
+                return;
+            }
+        }
+
         if (playerRooms.containsKey(player.getUniqueId())) {
             player.sendMessage(ChatColor.RED + "你已经在一个房间中了！");
             return;
@@ -609,7 +664,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         // 金币房特殊处理（带附魔效果）
         if (room.isMoneyGame()) {
             // 检查玩家金币是否足够
-            double playerBalance = econ.getBalance(viewer);
+            double playerBalance = getPlayerBalance(viewer);
             double required = getMoneyMultiplier();
             boolean hasEnough = playerBalance >= required;
 
@@ -831,7 +886,7 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         // 如果是金币房，检查玩家金币是否足够
         if (targetRoom.isMoneyGame() && isBountyEnabled()) {
             double required = getMoneyMultiplier();
-            double playerBalance = econ.getBalance(player);
+            double playerBalance = getPlayerBalance(player);
 
             if (playerBalance < required) {
                 player.sendMessage(ChatColor.RED + "加入失败！该房间是金币赛，需要至少 " + required +
@@ -1135,7 +1190,15 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
         }
     }
 
-    public Economy getEconomy() {
+    /**
+     * 获取经济系统实例（已废弃，使用反射方法代替）
+     * @deprecated 使用 getPlayerBalance, withdrawPlayer, depositPlayer 方法代替
+     */
+    @Deprecated
+    public Object getEconomy() {
+        if (!bountyEnabled) {
+            return null;
+        }
         return econ;
     }
 
@@ -1145,5 +1208,9 @@ public class Landlord extends JavaPlugin implements Listener, CommandExecutor, T
 
     public int getMoneyMultiplier() {
         return moneyMultiplier;
+    }
+
+    public boolean isVaultAvailable() {
+        return vaultAvailable;
     }
 }

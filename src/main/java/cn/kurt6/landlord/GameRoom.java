@@ -99,18 +99,19 @@ public class GameRoom {
     }
 
     public void addPlayer(Player player) {
-        // 金币赛检查
+        // 金币赛检查（如果开启）
         if (moneyGame && plugin.isBountyEnabled()) {
             double required = plugin.getMoneyMultiplier();
-            if (!plugin.getEconomy().has(player, required)) {
+            double playerBalance = plugin.getPlayerBalance(player);
+            if (playerBalance < required) {
                 player.sendMessage(ChatColor.RED + "加入失败！金币赛需要至少 " + required + " 金币，你当前只有 " +
-                        plugin.getEconomy().getBalance(player) + " 金币");
+                        playerBalance + " 金币");
                 return;
             }
         }
 
         players.put(player.getUniqueId(), player);
-        readyStatus.put(player.getUniqueId(), false);
+        readyStatus.put(player.getUniqueId(), false); // 确保初始化准备状态为 false
         autoPlay.put(player.getUniqueId(), false);
         selectedCards.put(player.getUniqueId(), new ArrayList<>());
         bidStatus.put(player.getUniqueId(), 0);
@@ -207,16 +208,23 @@ public class GameRoom {
             return;
         }
 
-        // 金币赛检查
+        // 确保玩家在 readyStatus 中有记录（防止 NullPointerException）
+        if (!readyStatus.containsKey(player.getUniqueId())) {
+            readyStatus.put(player.getUniqueId(), false);
+        }
+
+        // 金币赛检查（如果开启）
         if (moneyGame && plugin.isBountyEnabled()) {
             double required = plugin.getMoneyMultiplier();
-            if (!plugin.getEconomy().has(player, required)) {
+            double playerBalance = plugin.getPlayerBalance(player);
+            if (playerBalance < required) {
                 player.sendMessage(ChatColor.RED + "准备失败！金币赛需要至少 " + required + " 金币，你当前只有 " +
-                        plugin.getEconomy().getBalance(player) + " 金币");
+                        playerBalance + " 金币");
                 return;
             }
         }
 
+        // 切换准备状态
         boolean ready = !readyStatus.get(player.getUniqueId());
         readyStatus.put(player.getUniqueId(), ready);
 
@@ -226,7 +234,7 @@ public class GameRoom {
         updateBossBar();
         updateScoreboard();
 
-        // 检查是否可以开始游戏
+        // 检查是否可以开始游戏（3人全部准备）
         if (players.size() == 3 && readyStatus.values().stream().allMatch(r -> r)) {
             startGame();
         }
@@ -237,9 +245,10 @@ public class GameRoom {
         if (moneyGame && plugin.isBountyEnabled()) {
             double required = plugin.getMoneyMultiplier();
             for (Player p : players.values()) {
-                if (!plugin.getEconomy().has(p, required)) {
-                    broadcastToRoom(ChatColor.RED + "游戏无法开始！玩家 " + p.getName() +
-                            " 金币不足 (需要: " + required + ", 当前: " + plugin.getEconomy().getBalance(p) + ")");
+                double playerBalance = plugin.getPlayerBalance(p);
+                if (playerBalance < required) {
+                    p.sendMessage(ChatColor.RED + "游戏无法开始！玩家 " + p.getName() +
+                            " 金币不足 (需要: " + required + ", 当前: " + playerBalance + ")");
                     return;
                 }
             }
@@ -1103,6 +1112,7 @@ public class GameRoom {
         for (UUID playerId : players.keySet()) {
             readyStatus.put(playerId, false);
             autoPlay.put(playerId, false); // 清除托管状态
+            selectedCards.get(playerId).clear(); // 清空选择
         }
 
         // 处理金币奖励
@@ -1166,7 +1176,8 @@ public class GameRoom {
             player.spigot().sendMessage(new TextComponent(" ")); // 空消息占位
             player.spigot().sendMessage(readyButton);
 
-            // 如果玩家处于托管状态，发送取消托管的消息
+            // 强制取消托管状态
+            autoPlay.put(player.getUniqueId(), false);
             if (autoPlay.getOrDefault(player.getUniqueId(), false)) {
                 player.sendMessage(ChatColor.YELLOW + "你的托管状态已自动取消");
             }
@@ -1195,6 +1206,7 @@ public class GameRoom {
         for (UUID playerId : players.keySet()) {
             readyStatus.put(playerId, false);
             autoPlay.put(playerId, false); // 确保重置托管状态
+            selectedCards.get(playerId).clear(); // 清空选择
         }
 
         lastHandMessages.clear();
@@ -1631,18 +1643,25 @@ public class GameRoom {
             return;
         }
 
+        // Vault检查
+        if (!plugin.isBountyEnabled() || plugin.getEconomy() == null) {
+            player.sendMessage(ChatColor.RED + "金币赛功能未启用或Vault经济系统不可用！");
+            return;
+        }
+
         moneyGame = !moneyGame;
         String status = moneyGame ? ChatColor.GREEN + "已开启" : ChatColor.RED + "已关闭";
-        int required = plugin.getMoneyMultiplier();
 
         if (moneyGame) {
             // 检查所有玩家金币是否足够
             boolean allHaveMoney = true;
-            for (Player p : players.values()) {
-                if (!plugin.getEconomy().has(p, required)) {
-                    p.sendMessage(ChatColor.RED + "警告！金币赛需要至少 " + required + " 金币，你当前只有 " +
-                            plugin.getEconomy().getBalance(p) + " 金币");
-                    allHaveMoney = false;
+            if (moneyGame && plugin.isBountyEnabled()) {
+                double required = plugin.getMoneyMultiplier();
+                double playerBalance = plugin.getPlayerBalance(player);
+                if (playerBalance < required) {
+                    player.sendMessage(ChatColor.RED + "警告！金币赛需要至少 " + required + " 金币，你当前只有 " +
+                            playerBalance + " 金币");
+                    return;
                 }
             }
 
@@ -1652,14 +1671,22 @@ public class GameRoom {
         }
 
         broadcastToRoom(ChatColor.GOLD + "金币赛 " + status + ChatColor.GOLD +
-                "！本局金币倍率: " + required + " (需要至少 " + required + " 金币)");
+                "！本局金币倍率: " + plugin.getMoneyMultiplier() + " (需要至少 " + plugin.getMoneyMultiplier() + " 金币)");
 
         // 更新bossbar显示
         updateBossBar();
     }
 
     private void handleMoneyRewards(String result) {
-        if (!moneyGame || plugin.getEconomy() == null) return;
+        if (!moneyGame || !plugin.isBountyEnabled()) {
+            return;
+        }
+
+        Economy economy = (Economy) plugin.getEconomy();
+        if (economy == null) {
+            broadcastToRoom(ChatColor.RED + "经济系统不可用，无法处理金币奖励！");
+            return;
+        }
 
         boolean isLandlordWin = result.contains("地主获胜");
         int baseAmount = multiplier * plugin.getMoneyMultiplier();
@@ -1672,13 +1699,33 @@ public class GameRoom {
         if (isLandlordWin) {
             // 地主获胜，每个农民给地主baseAmount
             for (Player farmer : farmers) {
-                forceTransferMoney(farmer, landlordPlayer, baseAmount, "输给地主");
+                // 如果农民掉线且赢了，跳过支付
+                if (!farmer.isOnline() && !isLandlordWin) {
+                    continue;
+                }
+
+                double farmerBalance = economy.getBalance(farmer);
+                if (farmerBalance >= baseAmount) {
+                    // 农民有足够金币，正常转账
+                    forceTransferMoney(farmer, landlordPlayer, baseAmount, "输给地主");
+                } else {
+                    // 农民金币不足，只转账实际有的金额
+                    if (farmerBalance > 0) {
+                        forceTransferMoney(farmer, landlordPlayer, farmerBalance, "输给地主(部分支付)");
+                    }
+                    broadcastToRoom(ChatColor.RED + farmer.getName() + " 金币不足，无法支付全部赌注！");
+                }
             }
         } else {
             // 农民获胜，地主给每个农民baseAmount/2
             int farmerReward = baseAmount / 2;
-            double landlordBalance = plugin.getEconomy().getBalance(landlordPlayer);
+            double landlordBalance = economy.getBalance(landlordPlayer);
             double totalRequired = farmerReward * farmers.size();
+
+            // 如果地主掉线且赢了，跳过支付
+            if (!landlordPlayer.isOnline() && isLandlordWin) {
+                return;
+            }
 
             if (landlordBalance >= totalRequired) {
                 // 地主金币足够，正常支付
@@ -1692,30 +1739,29 @@ public class GameRoom {
                     for (Player farmer : farmers) {
                         forceTransferMoney(landlordPlayer, farmer, eachFarmerGets, "平分地主剩余金币");
                     }
-                    // 通知所有玩家
-                    broadcastToRoom(ChatColor.RED + String.format("地主金币不足！农民平分了地主剩余的 %.2f 金币", landlordBalance));
-                } else {
-                    broadcastToRoom(ChatColor.RED + "地主金币不足，无法支付任何奖励！");
                 }
+                broadcastToRoom(ChatColor.RED + String.format("地主金币不足！农民平分了地主剩余的 %.2f 金币", landlordBalance));
             }
         }
     }
 
     // 强制转账（无论玩家是否在线）
     private void forceTransferMoney(Player from, Player to, double amount, String reason) {
-        Economy econ = plugin.getEconomy();
-        if (from == null || to == null) return;
+        Economy econ = (Economy) plugin.getEconomy();
+        if (from == null || to == null || econ == null) return;
 
         String fromName = from.getName();
         String toName = to.getName();
 
-        // 检查余额是否足够
+        // 获取当前余额
         double fromBalance = econ.getBalance(from);
         double actualAmount = Math.min(amount, fromBalance);
 
         if (actualAmount <= 0) {
-            // 记录到日志
             plugin.getLogger().warning(fromName + " 金币不足，无法支付 " + amount + " 给 " + toName);
+            if (from.isOnline()) {
+                from.sendMessage(ChatColor.RED + "你的金币不足，无法完成支付！");
+            }
             return;
         }
 
